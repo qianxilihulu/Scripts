@@ -2,7 +2,7 @@
 
 set -e
 
-Dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+Dir="$(pwd)"
 declare -a Inbounds ClientOubounds
 declare Dns_Strategy
 
