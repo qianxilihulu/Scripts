@@ -139,7 +139,7 @@ GetDnsStrategy(){
     local -a options=(both prefer_ipv4 prefer_ipv6 ipv4_only ipv6_only )
 
     Dns_Strategy=$(PickFromArray "${options[@]}")
-    [[ $Dns_Strategy == "both" ]] && Dns_Strategy=""
+    [[ $Dns_Strategy == "both" ]] && Dns_Strategy="" || return 0
 }
 
 ChoosePublicIp(){
