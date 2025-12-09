@@ -285,7 +285,7 @@ EOF
 }
 
 ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
-    "tag": "",
+    "tag": "$(sing-box generate rand --base64 8)",
     "type": "vless",
     "flow": "xtls-rprx-vision",
     "server": "${_dict[server]}",
@@ -308,7 +308,7 @@ EOF
 }
 
 ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
-    "tag": "",
+    "tag": "$(sing-box generate rand --base64 8)",
     "type": "shadowsocks",
     "server": "${_dict[server]}",
     "server_port": ${_dict[port]},
