@@ -64,8 +64,9 @@ SetUpVless(){
 
     short_id=$(sing-box generate rand 4 --hex)
 
+    local -a servers
     echo "Choose the public IP client to connect to:"
-    server=$(ChoosePublicIp)
+    ChoosePublicIp servers
 
     local -A dict=(
         [port]=$port
@@ -74,10 +75,12 @@ SetUpVless(){
         [reality_public_key]=$public_key
         [reality_private_key]=$private_key
         [reality_short_id]=$short_id
-        [server]=$server
     )
     Inbounds+=("$(VlessInbound dict users)")
-    ClientOubounds+=("$(ClientVlessOutbound dict)")
+    local s; for s in "${servers[@]}"; do
+        dict[server]=$s
+        ClientOubounds+=("$(ClientVlessOutbound dict)")
+    done
 }
 
 SetUpShadowSocks(){
@@ -113,8 +116,9 @@ SetUpShadowSocks(){
     user[password]=$(sing-box generate rand --base64 "${key_length_requirements[$method]}")
     users+=("$(ConvertAssociatedArrayToObject user)")
 
+    local -a servers
     echo "Choose the public IP client to connect to:"
-    server=$(ChoosePublicIp)
+    ChoosePublicIp servers
 
     local -A dict=(
         [server]=$server
@@ -123,7 +127,10 @@ SetUpShadowSocks(){
         [password]=${user[password]}
     )
     Inbounds+=("$(ShadowSocksInbound dict users)")
-    ClientOubounds+=("$(ClientShadowSocksOutbound dict)")
+    local s; for s in "${servers[@]}"; do
+        dict[server]=$s
+        ClientOubounds+=("$(ClientVlessOutbound dict)")
+    done
 }
 
 GetDnsStrategy(){
@@ -136,28 +143,37 @@ GetDnsStrategy(){
 }
 
 ChoosePublicIp(){
-    local list addresses
-    list=$( ip addr show scope global \
+    local -n _addrs=$1
+
+    local info; local -a list
+    echo "Detecting available public addresses..." >&2
+    info=$( ip addr show scope global \
       | grep -oP '(?<=inet6 )[0-9a-f:]+|(?<=inet )([0-9]+\.){3}[0-9]+' \
       | grep -Pv '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|169\.254\.|127\.|f|::1$)'
     )
-    readarray -t addresses < <(printf "%s\n" "$list" | sort -u)
+    readarray -t list < <(printf "%s\n" "$info" | sort -u)
+    local custom="Custom domain or IP that points to this server"; list+=("$custom")
 
-    local count addr
-    count=${#addresses[@]}
-    if (( count == 1 )); then
-        addr=${addresses[0]}
-        echo "Detected public address: $addr" >&2
-    elif (( count == 0 )); then
-        echo "[!] No public address found." >&2
-        exit 1
-    elif (( count > 1)); then
-        echo "Detected multiple public addresses." >&2
-        addr=$(PickFromArray "${addresses[@]}")
-        echo "Using address $addr" >&2
-    fi
+    PickFromArray -m _addrs "${list[@]}"
 
-    echo "$addr"
+    local choice
+    local i count; count=${#_addrs[@]}
+    for (( i=0; i<count; i++ )); do
+        [[ "${_addrs[$i]}" != "$custom" ]] && continue
+        local answer customs
+        read -rp "Type your custom domain or IP (Allow multiple seprated by blank space): " answer
+        readarray -t customs < <(echo "$answer" | xargs -n1 | sort -u)
+        _addrs+=("${customs[@]}")
+        unset "_addrs[$i]"
+    done
+    
+    local choice; for choice in "${_addrs[@]}"; do
+        [[ "$choice" != "$custom" ]] && continue
+        local answer customs
+        read -rp "Type your custom domain or IP (Allow multiple seprated by blank space): " answer
+        readarray -t customs < <(echo "$answer" | xargs -n1 | sort -u)
+        _addrs+=("${customs[@]}")
+    done
 }
 
 ServerConfig(){ cat <<EOF
@@ -376,19 +392,31 @@ CheckYesNo() {
 }
 
 PickFromArray(){
-    local -a array=("$@")
-    local count; count=${#array[@]}
-
-    for((i=0; i<count; i++)); do
-        echo "$i. ${array[i]}" >& 2
+    local multiple; 
+    [[ $1 == -m ]] && { multiple=1; local -n _arr=$2; shift 2; }
+    
+    local -a list=("$@")
+    local count; count=${#list[@]}
+    for(( i=1; i<=count; i++ )); do
+        echo "$i. ${list[i-1]}" >& 2
     done
 
-    local answer; read -rp "Choose by index: " answer
-    answer=$(Trim "$answer")
-
-    [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 0 && answer < count )) || { echo "Invalid input. Aborting..." >& 2; exit 1; }
+    local answer; read -rp "Choose by index$( [[ $multiple ]] && echo " (Allow multiple seprated by blankspace)"): " answer
     
-    echo "${array[$answer]}"
+    validate_input(){
+        [[ "$1" =~ ^[0-9]+$ ]] && (( $1 > 0 && $1 <= $2 )) || { echo "Invalid input. Aborting..." >& 2; exit 1; }
+    }
+    if [[ $multiple ]]; then
+        local choices; readarray -t choices < <(echo "$answer" | xargs -n1 | sort -u)
+        local c; for c in "${choices[@]}"; do
+            validate_input "$c" "$count"
+            _arr+=("${list[$((c - 1))]}")
+        done
+    else
+        answer=$(Trim "$answer")
+        validate_input "$answer" "$count"
+        echo "${list[$((answer - 1))]}"
+    fi
 }
 
 Main
