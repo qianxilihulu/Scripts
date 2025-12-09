@@ -95,7 +95,7 @@ SetUpShadowSocks(){
         [2022-blake3-aes-256-gcm]=32
         [2022-blake3-chacha20-poly1305]=32
     )
-    local port method
+    local port method server_password
     local -a users
     local answer
 
@@ -111,6 +111,8 @@ SetUpShadowSocks(){
         method="2022-blake3-chacha20-poly1305"
     fi
 
+    server_password=$(sing-box generate rand --base64 "${key_length_requirements[$method]}")
+
     local -A user
     user[name]="ss_client"
     user[password]=$(sing-box generate rand --base64 "${key_length_requirements[$method]}")
@@ -124,7 +126,8 @@ SetUpShadowSocks(){
         [server]=$server
         [port]=$port
         [method]=$method
-        [password]=${user[password]}
+        [server_password]=$server_password
+        [user_password]=${user[password]}
     )
     Inbounds+=("$(ShadowSocksInbound dict users)")
     local s; for s in "${servers[@]}"; do
@@ -277,6 +280,7 @@ ShadowSocksInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
     "listen": "::",
     "listen_port": ${_dict[port]},
     "method": "${_dict[method]}",
+    "password": "${_dict[server_password]}",
     "users": $(ConvertArrayToJsonArray _users),
     "multiplex": { 
         "enabled": true
@@ -313,7 +317,7 @@ ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
     "server": "${_dict[server]}",
     "server_port": ${_dict[port]},
     "method": "${_dict[method]}",
-    "password": "${_dict[password]}",
+    "password": "${_dict[server_password]}:${_dict[user_password]}",
     "multiplex": { 
         "enabled": true, 
         "protocol": "smux" 
