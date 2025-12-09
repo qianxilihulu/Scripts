@@ -1,0 +1,394 @@
+#! /bin/bash
+
+set -e
+
+Dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+declare -a Inbounds ClientOubounds
+declare Dns_Strategy
+
+Main(){
+    command -v sing-box >/dev/null && printf "sing-box installation detected.\n\n" || { echo "[!] No sing-box installation found."; exit 1; }
+    local answer
+
+    read -rp "Set up Vless+Vision+Reality inbound? [y/n]: " answer
+    CheckYesNo "$answer" && SetUpVless
+    echo
+
+    read -rp "Set up ShadowSocks inbound? [y/n]: " answer
+    CheckYesNo "$answer" && SetUpShadowSocks
+    echo
+
+    [[ ${#Inbounds[@]} -eq 0 ]] && { echo "No inbounds defined. Aborting..."; exit 1; }
+
+    GetDnsStrategy
+    echo
+
+    local tmp; tmp=$(mktemp) || { echo "mktemp failed"; exit 1; }
+    ServerConfig > "$tmp"
+    sing-box format -w -c "$tmp" 2>/dev/null
+    
+    local output_file="$Dir/sing-box.json"
+    cp "$tmp" "$output_file"
+    echo "Saved result to $output_file"
+    echo
+
+    echo "Client configuration:"
+    ClientConfig > "$tmp"
+    sing-box format -w -c "$tmp" 2>/dev/null
+    cat "$tmp"
+}
+
+SetUpVless(){
+    echo "Setting up Vless..."
+    local port short_id public_key private_key reality_server server
+    local -a users
+    local answer
+
+    read -rp "Port Vless serves on [Default: 443]: " answer
+    answer=$(Trim "${answer}")
+    port=${answer:-443}
+
+    local -A user
+    user[name]="vless_client"
+    user[uuid]=$(sing-box generate uuid)
+    user[flow]="xtls-rprx-vision" 
+    users+=("$(ConvertAssociatedArrayToObject user)")
+
+    read -rp "Reality camouflage server [Example: itunes.apple.com]: " answer
+    reality_server=$(Trim "$answer")
+    [[ -z "$reality_server" ]] && { echo "[!] No server provided. Aborting..."; exit 1; }
+    
+    local key_pair; key_pair=$(sing-box generate reality-keypair)
+    public_key=$(printf "%s" "$key_pair" | awk -F': ' '/PublicKey/ {print $2}')
+    private_key=$(printf "%s" "$key_pair" | awk -F': ' '/PrivateKey/ {print $2}')
+
+    short_id=$(sing-box generate rand 4 --hex)
+
+    echo "Choose the public IP client to connect to:"
+    server=$(ChoosePublicIp)
+
+    local -A dict=(
+        [port]=$port
+        [uuid]=${user[uuid]}
+        [reality_server]=$reality_server
+        [reality_public_key]=$public_key
+        [reality_private_key]=$private_key
+        [reality_short_id]=$short_id
+        [server]=$server
+    )
+    Inbounds+=("$(VlessInbound dict users)")
+    ClientOubounds+=("$(ClientVlessOutbound dict)")
+}
+
+SetUpShadowSocks(){
+    echo "Setting up ShadowSocks..."
+    local -A available_methods=( 
+        [1]="2022-blake3-aes-128-gcm" 
+        [2]="2022-blake3-aes-256-gcm"
+        [3]="2022-blake3-chacha20-poly1305"
+    )
+    local -A key_length_requirements=(
+        [2022-blake3-aes-128-gcm]=16
+        [2022-blake3-aes-256-gcm]=32
+        [2022-blake3-chacha20-poly1305]=32
+    )
+    local port method
+    local -a users
+    local answer
+
+    read -rp "Port ShadowSocks serves on [Default: Randomized between 49152 and 65535]: " answer
+    answer=$(Trim "${answer}")
+    port=${answer:-$(( RANDOM % 16383 + 49152 ))}
+
+    if lscpu | grep -iq aes; then
+        echo "Hardware supports AES-NI."
+        method="2022-blake3-aes-128-gcm"
+    else
+        echo "No hardware AES-NI support."
+        method="2022-blake3-chacha20-poly1305"
+    fi
+
+    local -A user
+    user[name]="ss_client"
+    user[password]=$(sing-box generate rand --base64 "${key_length_requirements[$method]}")
+    users+=("$(ConvertAssociatedArrayToObject user)")
+
+    echo "Choose the public IP client to connect to:"
+    server=$(ChoosePublicIp)
+
+    local -A dict=(
+        [server]=$server
+        [port]=$port
+        [method]=$method
+        [password]=${user[password]}
+    )
+    Inbounds+=("$(ShadowSocksInbound dict users)")
+    ClientOubounds+=("$(ClientShadowSocksOutbound dict)")
+}
+
+GetDnsStrategy(){
+    echo "Choosing server side resolving strategy..."
+    echo "Note this only affects server-originated DNS queries, e.g., resolving Reality domains."
+    local -a options=(both prefer_ipv4 prefer_ipv6 ipv4_only ipv6_only )
+
+    Dns_Strategy=$(PickFromArray "${options[@]}")
+    [[ $Dns_Strategy == "both" ]] && Dns_Strategy=""
+}
+
+ChoosePublicIp(){
+    local list addresses
+    list=$( ip addr show scope global \
+      | grep -oP '(?<=inet6 )[0-9a-f:]+|(?<=inet )([0-9]+\.){3}[0-9]+' \
+      | grep -Pv '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|169\.254\.|127\.|f|::1$)'
+    )
+    readarray -t addresses < <(printf "%s\n" "$list" | sort -u)
+
+    local count addr
+    count=${#addresses[@]}
+    if (( count == 1 )); then
+        addr=${addresses[0]}
+        echo "Detected public address: $addr" >&2
+    elif (( count == 0 )); then
+        echo "[!] No public address found." >&2
+        exit 1
+    elif (( count > 1)); then
+        echo "Detected multiple public addresses." >&2
+        addr=$(PickFromArray "${addresses[@]}")
+        echo "Using address $addr" >&2
+    fi
+
+    echo "$addr"
+}
+
+ServerConfig(){ cat <<EOF
+    {
+        $(ConvertArrayToJsonField Inbounds inbounds),
+
+        "route": {
+            "rules": [
+                {
+                    "domain_suffix": ".cn",
+                    "action": "reject"
+                },
+                {
+                    "rule_set": [ "geoip-cn" ],
+                    "action": "reject"
+                },
+                {
+                    "type": "logical",
+                    "mode": "and",
+                    "rules": [
+                        { "rule_set": [ "geosite-cn" ] },
+                        { "invert": true, "rule_set": [ "geosite-geolocation-!cn" ] }
+                    ],
+                    "action": "reject"
+                }
+            ],
+            "rule_set": [
+                {
+                    "tag": "geoip-cn",
+                    "type": "remote",
+                    "format": "binary",
+                    "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
+                },
+                {
+                    "tag": "geosite-cn",
+                    "type": "remote",
+                    "format": "binary",
+                    "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+                },
+                {
+                    "tag": "geosite-geolocation-!cn",
+                    "type": "remote",
+                    "format": "binary",
+                    "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"
+                }
+            ]
+        },
+
+        "outbounds": [ 
+            { $(DirectOutbound) } 
+        ],
+
+        "dns": {
+            $( [[ -n $Dns_Strategy ]] && echo \"strategy\": \""$Dns_Strategy"\", )
+            "servers": [
+                { $(LocalDns) }
+            ]
+        },
+
+        "log": {
+            "disabled": false,
+            "level": "debug"
+        }
+    }
+EOF
+}
+
+ClientConfig(){ cat <<EOF
+    {
+        $(ConvertArrayToJsonField ClientOubounds outbounds)
+    }
+EOF
+}
+
+VlessInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
+    "tag": "vless-in",
+    "type": "vless",
+    "listen": "::",
+    "listen_port": ${_dict[port]},
+    "users": $(ConvertArrayToJsonArray _users),
+    "tls": {
+        "enabled": true,
+        "server_name": "${_dict[server]}",
+        "reality": {
+            "enabled": true,
+            "handshake": {
+                "server": "${_dict[server]}",
+                "server_port": 443
+            },
+            "private_key": "${_dict[reality_private_key]}",
+            "short_id":  "${_dict[reality_short_id]}" ,
+            "max_time_difference": "1m"
+        }
+    }
+EOF
+}
+
+ShadowSocksInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
+    "tag": "ss-in",
+    "type": "shadowsocks",
+    "listen": "::",
+    "listen_port": ${_dict[port]},
+    "method": "${_dict[method]}",
+    "users": $(ConvertArrayToJsonArray _users),
+    "multiplex": { 
+        "enabled": true
+    }
+EOF
+}
+
+ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
+    "tag": "",
+    "type": "vless",
+    "flow": "xtls-rprx-vision",
+    "server": "${_dict[server]}",
+    "server_port": ${_dict[port]},
+    "uuid": "${_dict[uuid]}",
+    "tls": {
+        "enabled": true,
+        "server_name": "${_dict[reality_server]}",
+        "reality": {
+            "enabled": true,
+            "public_key": "${_dict[reality_public_key]}",
+            "short_id": "${_dict[reality_short_id]}"
+        },
+        "utls": {
+            "enabled": true,
+            "fingerprint": "chrome"
+        }
+    }
+EOF
+}
+
+ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
+    "tag": "",
+    "type": "shadowsocks",
+    "server": "${_dict[server]}",
+    "server_port": ${_dict[port]},
+    "method": "${_dict[method]}",
+    "password": "${_dict[password]}",
+    "multiplex": { 
+        "enabled": true, 
+        "protocol": "smux" 
+    }
+EOF
+}
+
+DirectOutbound(){ cat <<EOF
+    "tag": "direct-out",
+    "type": "direct"
+EOF
+}
+
+LocalDns(){ cat <<EOF
+    "tag": "local_dns",
+    "type": "local"
+EOF
+}
+
+ConvertArrayToJsonField(){
+    local -n _arr=$1
+    local name=$2
+    [[ ${#_arr[@]} -eq 0 ]] && return 0
+    echo "\"$name\": $(ConvertArrayToJsonArray _arr)"
+}
+
+ConvertArrayToJsonArray(){
+    local -n __arr=$1
+    
+    local result="[" value
+    local i count=${#__arr[@]}
+    for (( i=0; i<count; i++ )); do
+        value=${__arr[i]}
+        [[ $value != "["* && $value != "{"* ]] && value="{$value}"
+        result+="$value"
+        (( i != count-1 )) && result+=","
+    done
+    result+="]"
+
+    echo "$result"
+}
+
+ConvertAssociatedArrayToObject(){
+    local -n __arr=$1
+
+    local is_first result="{"
+    local key value
+    for key in "${!__arr[@]}"; do
+        value=${__arr[$key]}
+        [[ $value != "["* && $value != "{"* ]] && value="\"$value\""
+        [[ $is_first ]] && result+=", "
+        result+="\"$key\": $value"
+        is_first=1
+    done
+    result+="}"
+
+    echo "$result"
+}
+
+Trim(){
+    echo "$1" | sed -E 's/^\s+//;s/\s+$//'
+}
+
+CheckYesNo() {
+    local input=$1
+    [[ -z $input ]] && input=$2 # Default value
+
+   if [[ $input =~ ^[:space:]*[Yy].* ]]; then
+        return 0
+    elif [[ $input =~ ^[:space:]*[Nn].* ]]; then
+        return 1
+    else 
+        echo "Unknown Input. Please type Y or y or N or n."
+        exit 1
+    fi
+}
+
+PickFromArray(){
+    local -a array=("$@")
+    local count; count=${#array[@]}
+
+    for((i=0; i<count; i++)); do
+        echo "$i. ${array[i]}" >& 2
+    done
+
+    local answer; read -rp "Choose by index: " answer
+    answer=$(Trim "$answer")
+
+    [[ "$answer" =~ ^[0-9]+$ ]] && (( answer >= 0 && answer < count )) || { echo "Invalid input. Aborting..." >& 2; exit 1; }
+    
+    echo "${array[$answer]}"
+}
+
+Main
