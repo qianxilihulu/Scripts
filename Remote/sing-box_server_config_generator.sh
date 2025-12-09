@@ -129,7 +129,7 @@ SetUpShadowSocks(){
     Inbounds+=("$(ShadowSocksInbound dict users)")
     local s; for s in "${servers[@]}"; do
         dict[server]=$s
-        ClientOubounds+=("$(ClientVlessOutbound dict)")
+        ClientOubounds+=("$(ClientShadowSocksOutbound dict)")
     done
 }
 
