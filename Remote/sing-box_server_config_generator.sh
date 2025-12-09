@@ -227,7 +227,7 @@ ServerConfig(){ cat <<EOF
         ],
 
         "dns": {
-            $( [[ -n $Dns_Strategy ]] && echo \"strategy\": \""$Dns_Strategy"\", )
+            $( [[ -n $Dns_Strategy ]] && echo "\"strategy\": \"$Dns_Strategy\"", )
             "servers": [
                 { $(LocalDns) }
             ]
