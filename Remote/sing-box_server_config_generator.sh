@@ -6,6 +6,8 @@ Dir="$(pwd)"
 declare -a Inbounds ClientOubounds
 declare Dns_Strategy
 
+Default_Outbound_Tag="Don't forget to tag"
+
 Main(){
     command -v sing-box >/dev/null && printf "sing-box installation detected.\n\n" || { echo "[!] No sing-box installation found."; exit 1; }
     local answer
@@ -289,7 +291,7 @@ EOF
 }
 
 ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
-    "tag": "$(sing-box generate rand --base64 8)",
+    "tag": "$Default_Outbound_Tag",
     "type": "vless",
     "flow": "xtls-rprx-vision",
     "server": "${_dict[server]}",
@@ -312,7 +314,7 @@ EOF
 }
 
 ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
-    "tag": "$(sing-box generate rand --base64 8)",
+    "tag": "$Default_Outbound_Tag",
     "type": "shadowsocks",
     "server": "${_dict[server]}",
     "server_port": ${_dict[port]},
@@ -321,7 +323,8 @@ ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
     "multiplex": { 
         "enabled": true, 
         "protocol": "smux" 
-    }
+    },
+    "detour": "Using ShadowSocks directly in mainland China may receive immediate block by GFW"
 EOF
 }
 
