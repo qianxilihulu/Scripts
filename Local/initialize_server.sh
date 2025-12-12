@@ -2,8 +2,9 @@
 
 # Unfinished
 # /etc/ssh/sshd_config.d/ not considered
+# Non-root admin user
 # Restore not updated
-# Timestamp
+# Total automation
 
 InitializeShared(){
     # Color code
@@ -14,30 +15,30 @@ InitializeShared(){
     I=$'\e[0m' # Reset/Init
     
     # Log code
-    Sudoers_Modified="Sudoers file modified"
-    Hostname_Modified="Hostname changed from: "
-    Ssh_Config_Backed_Up="ssh_config backed up"
+    Modify_Hostname="Changing hostname from: "
+    Modify_Hosts_File="Modifying /etc/hosts..."
+    Sudoers_Modified="Modified sudoers file"
+    Public_Key_Added="Adding public keys..."
+    Private_Keys_Added="Private keys added to /etc/.ssh/config/"
+    Main_Sshd_Config_Modified="Modified /.ssh/sshd_config"
     Root_Password_Modified="Root user password changed"
     Fail2ban_Installed="Fail2Ban installed"
     Ufw_Installed="ufw installed"
     Nftables_Installed="Nftables installed"
     Nftables_Rule_Modified="Nftables rules added"
-    Private_Keys_Fetched="Private keys fetched"
-    Private_Keys_Added="Private keys added to /etc/.ssh/config/ with timestamp: "
-    Restore_Files_Fetched="Restoration files fetched"
-    Public_Key_Added="All public key added"
     Package_Updating="Initiated updating for all packages"
     Package_Updated="All packages updated"
-    Hosts_File_Modified="/etc/hosts modified"
     
+    # Obsolete
     CheckIfSudo(){
         if [[ "$EUID" -ne 0 ]]; then
-            echo -e "${R}ERROR${I}: This script requires root privileges. Please log into the server as root user."
+            echo -e "${R}ERROR${I}: Rot privileges required. Please log in as root user."
             exit 1
         fi
     }
     
     CheckIfTyping(){
+        [[ $IS_TYPING == "true" || $IS_TYPING == "false" ]] && return 0
         local answer
         read -rp "Do you wish to enable ${Y}typing effect${I} to improve readability and interactivity?: " answer
         CheckYesOrNo "$answer" && IS_TYPING=true || IS_TYPING=false
@@ -70,61 +71,63 @@ InitializeShared(){
     }
     
     Typing(){
-        local text if_new_line="true" is_ansi="false"
-        [[ $1 == "-n" ]] && { if_new_line=false; shift 1; }
-        [[ $# -eq 0 ]] && { echo "${R}BUG${I}: No text provided." >&2; exit 1; }
-    
-        text="${*}"
+        local text is_ansi if_new_line=1
+        local prefix
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -n) if_new_line=false; shift ;;
+                -w) prefix="${Y}WARNING: ${I}"; shift ;;
+                -e) prefix="${R}ERROR: ${I}"; shift ;;
+                -b) prefix="${R}BUG: ${I}"; shift ;;
+                *) break ;;
+            esac
+        done
+        if [[ $# -eq 0 ]]; then
+            echo "${R}BUG${I}: No text provided." >&2
+            exit 1
+        else
+            text="${*}"
+            [[ $prefix ]] && text="$prefix$text"
+        fi
 
         if [[ $IS_TYPING == "false" ]]; then
             echo -e -n "$text"
         elif [[ $IS_TYPING == "true" ]]; then
             for (( i=0; i<${#text}; i++ )); do
-                if [[ $is_ansi == "false" && "${text:$i:1}" = $'\e' ]]; then
-                    is_ansi=true
-                elif [[ $is_ansi == "true" && "${text:$i:1}" = "m" ]]; then
-                    is_ansi=false
+                if [[ $is_ansi && "${text:$i:1}" = $'\e' ]]; then
+                    is_ansi=1
+                elif [[ $is_ansi && "${text:$i:1}" = "m" ]]; then
+                    is_ansi=""
                 fi
-
                 echo -e -n "${text:$i:1}"
-                [[ $is_ansi == "false" ]] && sleep 0.034
+                [[ $is_ansi ]] && sleep 0.034
             done
         else
             echo -e "${R}BUG${I}: Environment variable \$IS_TYPING not set or invalid."
         fi
         
-        [[ $if_new_line == "true" ]] && echo || return 0
+        [[ $if_new_line ]] && echo || return 0
     }
 
-    LocateSshdConfig(){
-        echo "/etc/ssh/sshd_config"
-    }
-
-    LocateSshdConfigBak(){
-        echo "$(LocateSshConfig).bak"
+    Timestamp(){
+        date -u +"%Y-%m-%dT%H:%M:%S"
     }
 }
 
 InitializeLocal(){
-    Tmp_Dir="/tmp/Server_Initialization"
+    Timestamp=$(Timestamp)
     declare -g Local_Work_Dir Remote_Work_Dir
-    declare -g Key_Dir Restore_Dir 
-    declare -g Log_File
+    declare -g Key_Dir 
     declare -g Host User Port Ssh_Socket
 
     InitializeEnvironment(){
         GetServerInfo "$@"
 
-        Local_Work_Dir="$Tmp_Dir/$Host"
-        Remote_Work_Dir="$Tmp_Dir"
+        Local_Work_Dir=$(mktemp) || { Typing -e "Something went wrong creating temporary working directory. Aborting..."; exit 1; }
         Key_Dir="$Local_Work_Dir/Key"
-        Restore_Dir="$Local_Work_Dir/Restoration"
+        Ssh_Socket=$(mktemp -u --suffix=.sock) 
 
-        Log_File="$Restore_Dir/log"
-        Ssh_Socket="/tmp/$User@$Host:$Port.sock"
-    
         mkdir -p "$Key_Dir"
-        mkdir -p "$Restore_Dir"
     }
 
     GetServerInfo(){
@@ -132,8 +135,6 @@ InitializeLocal(){
             case "$1" in
                 -h|--host)
                     Host="$2"; shift 2 ;;
-                -u|--user)
-                    User="$2"; shift 2 ;;
                 -p|--port)
                     Port="$2"; shift 2 ;;
                 *)
@@ -142,127 +143,16 @@ InitializeLocal(){
         done
 
         [[ $Host ]] || { Typing -n "Now, what's the server's ${G}IP or domain${I}?: "; read -r Host; }
-        [[ $User ]] || { Typing -n "What's the admin user's ${G}name${I}? [Default to \"${G}root${I}\"]: "; read -r User; }
+        User=root
         [[ $Port ]] || { Typing -n "What's the SSH ${G}port${I}? [Default to 22]: "; read -r Port; }
         
         Host=$(Trim "$Host")
-        User=$(Trim "${User:-root}")
         Port=$(Trim "${Port:-22}")
         echo "Host: $Host"
-        echo "Admin user: $User"
+        echo "User: $User"
         echo "Port: $Port"
 
-        [[ $Host && $User && $Port ]] || { echo "No info provided. Aborting..."; exit 1; }
-    }
-
-    SetUp(){
-        ### Create master socket
-            rm -rf "${SSH_Socket:?}" # In case last setup was disrupted after creating master socket but before copying any setup files 
-            Typing "Let's first create a ${Y}master SSH connection${I}. It's essentially one persisting and reusable connection, saving you from retyping passwords repeatedly."
-            Typing "It will prompt for password. On Linux, password won't show up while typing for the sake of security, so don't be surprised."
-            CreateMasterSshConnection
-            echo -e "Master SSH connection ${G}created${I} at $Ssh_Socket"
-            echo
-
-        ### Copy files
-            Typing "${Y}Logging in${I} as admin user..."
-            SshRunCommand "mkdir -p $Remote_Work_Dir"
-            SftpToRemote "$Remote_Work_Dir" "$Script_Path"
-            local remote_script="$Remote_Work_Dir/$Script_Name"
-            echo -e "Script copied."
-            echo
-    
-        ### Set up
-            SshRunCommand "IS_TYPING=$IS_TYPING bash $remote_script --set_up_1"
-            echo
-    
-        ### Retrieve keys back
-            SftpFromRemote "$Key_Dir" "$Remote_Work_Dir/*.key"
-            Log "$Private_Keys_Fetched"
-            compgen -G "$Key_Dir/*.key" >/dev/null || { Typing "${R}ERROR:${I} No private key retrieved from remote."; exit 1; }
-            Typing "${G}Private keys fetched${I} and stored under $Key_Dir. ${G}Keep them safe!${I}"
-            echo
-    
-            local ssh_config_dir="$HOME/.ssh/config"
-            mkdir -p "$ssh_config_dir"
-            local base timestamp; timestamp=$(date +"%Y-%m-%d-%H:%M")
-            Log "$Private_Keys_Added $timestamp"
-            local k; for k in "$Key_Dir"/*.key; do
-                base=$(basename "$k" .key)
-                cp "$k" "$ssh_config_dir/${base}.${timestamp}.key"
-            done
-            chmod 600 "$ssh_config_dir/"*.key
-            Typing "Private keys copied to $ssh_config_dir. It's a folder ssh checks automatically when connecting to a remote server."
-            echo
-    
-        ### 
-            SshRunCommand "IS_TYPING=$IS_TYPING bash $remote_script --set_up_2"
-            Typing "Everything is set up."
-            echo
-    
-        ### Retrieve files for restoration back
-            local -a files; for file in user.log backup.nft root_authorized_keys log; do
-                files+=("$Remote_Work_Dir/$file")
-            done
-            # File backup.nft and root_authorized_keys may not exists, thus use "|| true" to catch errors.
-            SftpFromServer "$Restore_Dir" "${files[@]}"
-            Log "$Restore_Files_Fetched"
-            Typing "Files needed for restoration copied under $Restore_Dir."
-            echo
-    
-        ### Apply and Clean up
-            SshRunCommand "rm -rf $Remote_Work_Dir"
-            Typing "Cleaned up setup files for server."
-            echo
-    
-            RestartSsh
-            echo
-    
-            rm "$Ssh_Socket"
-            Typing "Master SSH connection socket removed. No one can exploit it now."
-            echo
-        
-        ### :)
-            Typing "${G}You're all set!${I}"
-            Typing "${G}Enjoy!${I}"
-    }
-
-    Restore(){
-        Typing "You've run this script for $Host before. ${Y}Something went wrong?${I} Don't worry, ${Y}let's restore everything!${I}"
-    
-        TryConnectToRestorationServer
-        echo
-    
-        if SshRunCommand "[[ -d $Remote_Work_Dir ]]"; then
-            echo "Detected neccessary files still left on server."
-        else
-            local files_to_upload=("$Common_Script" "$Restore_Script" "$Restore_Dir/*")
-            SftpToserver "$This_Dir" "${files_to_upload[@]}"
-            echo "Neccessary files copied."
-        fi
-        echo
-    
-        SshRunCommand "IS_TYPING=$IS_TYPING bash $Remote_Work_Dir/server_restore.sh"
-        echo "Everything restored."
-        echo
-    
-        SshRunCommand "rm -rf ${Remote_Work_Dir:?}"
-        echo "Set-up files removed from server."
-        echo
-    
-        SshRunCommand "systemctl restart ssh"
-        echo "Ssh service restarted."
-        echo
-        
-        rm "$Ssh_Socket"
-        echo "Master Ssh connection socket removed."
-        echo
-    
-        rm -rf "${Local_Work_Dir:?}"
-        echo "Related files removed from local machine."
-        echo
-    
-        echo -e "${G}You're all set${I}."
+        [[ $Host && $User && $Port ]] || { echo "Provided info is incomplete. Aborting..."; exit 1; }
     }
 
     InitializeLocalSetUp(){
@@ -272,7 +162,7 @@ InitializeLocal(){
         }
     
         RestartSsh(){
-            Typing "${Y}About to reload SSH service. All changes will take effect.${I}"
+            Typing "${Y}About to reload server-side SSH service. All changes will take effect.${I}"
             Typing "${R}Make sure having private keys locally if password authentication is disabled.${I}"
             
             local response
@@ -283,14 +173,23 @@ InitializeLocal(){
                 Typing "SSH service restarted"
             else
                 Typing "${G}Skipped${I} reloading SSH service."
-                Typing "Please reload ${G}manually${I} when ready for changes to apply."
+                Typing "Please reload ${G}manually${I} when ready."
             fi
         }
     
         SshRunCommand(){
-            ssh -S "$Ssh_Socket" -p "$Port" "$User@$Host" "$1"
+            ssh -S "$Ssh_Socket" -p "$Port" "$User@$Host" "$@"
         }
-    
+
+        SshRunScript(){
+            if [ -t 0 ]; then
+                SshRunCommand "bash -c" "$*"
+            else
+                SshRunCommand "bash -s"
+            fi
+        }
+
+        # Obsolete
         SftpToServer(){
             local dest="$1" files=("${@:2}")
             local command
@@ -301,7 +200,7 @@ InitializeLocal(){
             done
             command+="bye"
         
-            sftp -o "ControlPath=$Ssh_Socket" -o "Port=$Port" "$User@$(NormalizeHOst)" <<< "$command"
+            sftp -o "ControlPath=$Ssh_Socket" -o "Port=$Port" "$User@$(NormalizeHost)" <<< "$command"
         }
     
         SftpFromServer(){
@@ -321,6 +220,59 @@ InitializeLocal(){
             # SFTP mistakes colon as file name separator due to historical convention "user@host:file"
             [[ "$Host" == *:* ]] && echo "[$Host]" || echo "$Host"
         }
+    }
+
+    SetUp(){
+        ### Create master socket
+            rm -rf "${SSH_Socket:?}" # In case last setup was disrupted after creating master socket but before copying any setup files 
+            Typing "Let's first create a ${Y}master SSH connection${I}. It's essentially one persisting and reusable connection, saving you from retyping passwords repeatedly."
+            Typing "It will prompt for password. On Linux, password won't show up while typing for the sake of security, so don't be surprised."
+            CreateMasterSshConnection
+            echo -e "Master SSH connection ${G}created${I} at $Ssh_Socket"
+            echo
+
+        ### Set up
+            Remote_Work_Dir=$(SshRunCommand "mktemp")
+            local setup_env; setup_env=$(
+                printf '%s\n' \
+                    "set -eu" \
+                    "TIMESTAMP=$Timestamp" \
+                    "WORKING_DIR=$Remote_Work_Dir" \
+                    "SSH_PORT=$Port" \
+                    "IS_TYPING=$IS_TYPING" \
+                    "$(declare -f InitailizeShared)" \
+                    "$(declare -f InitializeRemoteSetUp)" \
+                    "InitailizeShared" \
+                    "InitializeRemoteSetUp" 
+            )
+            printf '%s\n' "$setup_env" "$(declare -f RemoteSetUp1)" "RemoteSetUp1" | SshRunScript
+            echo
+    
+        ### Fetch private keys back first
+            SftpFromRemote "$Key_Dir" "$Remote_Work_Dir/*.key"
+            compgen -G "$Key_Dir/*.key" >/dev/null || { 
+                Typing -e "No private key retrieved from remote."; 
+                exit 1; 
+            }
+
+            local ssh_config_dir="$HOME/.ssh/config"
+            mkdir -p "$ssh_config_dir"
+            
+            local base 
+            Log "$Private_Keys_Added"
+            local k; for k in "$Key_Dir"/*.key; do
+                base=$(basename "$k" .key)
+                cp "$k" "$ssh_config_dir/$base.$Timestamp.key"
+            done
+            chmod 600 "$ssh_config_dir/"*.key
+            Typing "Private keys copied to ${G}local $ssh_config_dir${I}. SSH checks it automatically when connecting to a remote server, saving you from specifying manually."
+            Typing "${G}Keep them safe!${I}"
+            echo
+    
+        ### Continue set up
+            printf '%s\n' "$setup_env" "$(declare -f RemoteSetUp2)" "RemoteSetUp2" | SshRunScript
+            Typing "Everything is set up."
+            echo
     }
 
     InitializeLocalRestore(){
@@ -369,9 +321,71 @@ InitializeLocal(){
             rm -rf "${user_ssh_socket:?}"
         }
     }
+
+    Restore(){
+        Typing "You've run this script for $Host before. ${Y}Something went wrong?${I} Don't worry, ${Y}let's restore everything!${I}"
+    
+        TryConnectToRestorationServer
+        echo
+    
+        if SshRunCommand "[[ -d $Remote_Work_Dir ]]"; then
+            echo "Detected neccessary files still left on server."
+        else
+            local files_to_upload=("$Common_Script" "$Restore_Script" "$Restore_Dir/*")
+            SftpToserver "$This_Dir" "${files_to_upload[@]}"
+            echo "Neccessary files copied."
+        fi
+        echo
+    
+        SshRunCommand "IS_TYPING=$IS_TYPING bash $Remote_Work_Dir/server_restore.sh"
+        echo "Everything restored."
+        echo
+    
+        SshRunCommand "rm -rf ${Remote_Work_Dir:?}"
+        echo "Set-up files removed from server."
+        echo
+    
+        SshRunCommand "systemctl restart ssh"
+        echo "Ssh service restarted."
+        echo
+        
+        rm "$Ssh_Socket"
+        echo "Master Ssh connection socket removed."
+        echo
+    
+        rm -rf "${Local_Work_Dir:?}"
+        echo "Related files removed from local machine."
+        echo
+    
+        echo -e "${G}You're all set${I}."
+    }
+
+    CleanUp(){
+        ### Apply and Clean up
+            rm -rf "${Local_Work_Dir:?}"
+            Typing "Cleaned up local temporary files."
+            echo
+        
+            SshRunCommand "rm -rf ${Remote_Work_Dir:?}"
+            Typing "Cleaned up remote temporary files."
+            echo
+    
+            RestartSsh
+            echo
+    
+            rm "$Ssh_Socket"
+            Typing "Master SSH connection socket removed. No one can exploit it now."
+            echo
+        
+        ### :)
+            Typing "${G}You're all set!${I}"
+            Typing "${G}Enjoy!${I}"
+    }
 }
 
 LocalMain() {
+    trap CleanUp EXIT INT TERM HUP
+
     CheckIfTyping
     echo
 
@@ -388,22 +402,24 @@ LocalMain() {
 }
 
 InitializeRemoteSetUp(){
-    Script_Dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    
-    Log_Path="$Script_Dir/log"
-    User_Record="$Script_Dir/new_users"
+    Log_Path="$WORKING_DIR/log"
+    User_Record="$WORKING_DIR/new_users"
     
     Os=""
     Update_Cmd=""
     Install_Cmd=""
 
-    Sshd_Config="$(LocateSshConfig)"
+    Hostname_File="/etc/hostname"
+    Sudoers_File="/etc/sudoers"
+
+    Sshd_Directive_Dir="/etc/ssh/sshd_config.d"
+    Sshd_Config="/etc/ssh/sshd_config.d/99-user.conf"
+    Initial_Ssh_Port=$SSH_PORT
     New_Ssh_Port=""
-    Initial_Ssh_Port=$(grep -E "^[[:space:]]*#?[[:space:]]*Port" "$Sshd_Config" | awk '{print $2}')
     
     New_Users=()
-    
-    Hostname=""
+
+    Hostname=$(cat "$Hostname_File")
 
     InitializeSystemInfo(){
         Typing "Some features of this script ${Y}aren't applicable to all Linux distributions${I}. Different distro ships with different packages and different package managing system. The script can't cover them all. Don't worry, those aren't critical. You can always set them up manually."
@@ -413,7 +429,7 @@ InitializeRemoteSetUp(){
             source "$os_file"
             Os=$ID
         else 
-            Typing "${R}ERROR${I}: Can't find file $os_file. Maybe a legacy distro."
+            Typing -e "Can't find file $os_file. Maybe a legacy distro."
             Os="Unknown"
             return 1
         fi
@@ -445,19 +461,10 @@ InitializeRemoteSetUp(){
     }
 
     ChangeHostname(){
-        Typing "You can ${Y}name the system${I}. It may help with identification. "
-    
-        # Query current hostname
-        local original
-        if hostnamectl status --static > /dev/null ; then
-            original=$(hostnamectl status --static)
-            Hostname="$original"
-            Typing "Your current hostname is $original."
-        else
-            Typing -e "${R}ERROR${I}: Cannot identify current hostname."
-            Typing "No worries. You can always change the hostname manually later."
-            return 0
-        fi
+        Typing "You can ${Y}rename the system${I}. It may help with identification. "
+
+        local original=$Hostname
+        Typing "Your current hostname is $original."
     
         # Retrieve and check new hostname
         local new
@@ -465,36 +472,46 @@ InitializeRemoteSetUp(){
         Typing -n "Type the new hostname (blankspace not allowed), return if no change: "; read -r new
         while  true; do
             new="$(Trim "$new")"
-            [[ -z "$new" ]] && { Typing "${G}Skipped${I} changing hostname."; return 0; }
-            if echo "$new" | grep -q " "; then
-                echo -e -n "${R}ERROR${I}: Blankspace is not allowed. Try again: "; read -r new
+            if [[ -z "$new" ]]; then
+                Typing "${G}Skipped${I} changing hostname."
+                return 0
+            elif echo "$new" | grep -q " "; then
+                Typing -n -e "Blankspace is not allowed. Try again: "; read -r new
             else
                 break
             fi
         done
         
+        Log "$Modify_Hostname $original"
+        if hostnamectl set-hostname "$new"; then
+            true
+        elif cat "$new" > "$Hostname_File"; then
+            hostname "$new"
+        else
+            Typing -e "Failed to change hostname. You may need to troubleshoot manually later."
+        fi
         Hostname="$new"
-        hostnamectl set-hostname "$new"
-        Log "$Hostname_Modified $original"
-        Typing "${G}Hostname changed${I} to $(hostnamectl status --static)."
+        
+        Typing "${G}Hostname successfully changed${I} to $(cat "$Hostname_File")"
     }
 
     EditHostsFile(){
         local hosts_file="/etc/hosts"
-        Typing "We also need to reflect the change in file /etc/hosts. It's a historic file mapping hostname and local IP. It's still referenced by some tools."
+        Typing "We also need to reflect the change in file $hosts_file. It's a file mapping hostname and local IP. It's still referenced by some tools."
         if ! CheckOsSupport; then
             Typing "However, we don't know the $hosts_file file structure of your distro."
             Typing "You may need to modify manually afterwards."
             return 0
         fi
 
-        cp "$hosts_file" "$hosts_file.bak"
-        Typing "Backup file created: $hosts_file.bak"
-        Log "$Hosts_File_Modified"
+        CreateBackup "$hosts_file"
+        Typing "Backup file created."
 
+        Log "$Modify_Hosts_File"
         case "$Os" in
             debian|ubuntu)
                 echo "127.0.1.1 $new" > /etc/hosts
+                echo "::1 $new" > /etc/hosts
                 ;;
             almalinux|centos|rocky|fedora)
                 echo "127.0.0.1 $new $new.localdomain $new.localdomain4" > /etc/hosts
@@ -503,8 +520,8 @@ InitializeRemoteSetUp(){
         esac
         Typing "${G}Successfully modified $hosts_file.${I}"
 
-        if grep -q "/etc/cloud/" /etc/hosts; then
-            Typing "${Y}WARNING:${I} Your server provider uses Cloud-Init, which means that after reboot, your server will follow cloud templates and forget all about modified $hosts_file."
+        if grep -q "/etc/cloud" /etc/hosts; then
+            Typing -w "Your server provider uses Cloud-Init, which means that after reboot, your server will follow cloud templates and forget all about changes we made."
             Typing "To make things persist, you need to manually disable Cloud-Init or change the template."
         fi
     }
@@ -518,7 +535,7 @@ InitializeRemoteSetUp(){
             Typing -n "New user name (blank space not allowed, use \"_\" instead): "; read -r new_user
             new_user="$(Trim "$new_user")"
             if ! useradd -m "$new_user"; then
-                Typing "${R}ERROR${I}: Failed to add user $new_user."
+                Typing -e "Failed to add user $new_user."
                 Typing "Don't worry. Let's try again."
                 more=true
                 continue
@@ -543,16 +560,15 @@ InitializeRemoteSetUp(){
                 echo -e "${G}Skipped${I} adding $new_user to sudo group."
             fi
 
-            Typing -n "Do you wish to add ${G}more${I} users? (y/N): " more
+            Typing -n "Do you wish to add ${G}more${I} users? (y/N): "; read -r more
             CheckYesOrNo "$more" N && more=true || more=false
         done
     }
 
     EnableSudoGroup(){
-        local sudoers_config="/etc/sudoers"
         Typing "${Y}Some distros need to manually enable super-user privilege even for sudo group${I}. Let's have a check..."
         
-        if grep -q '^ *%sudo ALL=(ALL:ALL) ALL' "$sudoers_config"; then
+        if grep -q '^ *%sudo ALL=(ALL:ALL) ALL' "$Sudoers_File"; then
             Typing "Your system ${G}already granted${I} sudo group super user privilege. Let's simply proceed to the next operation."
             return 0
         fi
@@ -560,18 +576,16 @@ InitializeRemoteSetUp(){
         Typing " ${Y}Manual enabling required.${I}."
         # It's risky to directly modify the sudoers file. Visudo is the way to go.
         # .bak file is for restoration process
-        local tmp_file="$sudoers_config.tmp"
-        local bak_file="$sudoers_config.bak"
-        cp "$sudoers_config" "$bak_file"
-        cp "$sudoers_config" "$tmp_file"
-        sed -i 's/^# *\(%sudo ALL=(ALL:ALL) ALL\)/\1/' "$tmp_file"
-        if visudo -csf "$tmp_file"; then
-            mv "$tmp_file" "$sudoers_config"
-            Typing "${G}Successfully granted${I} sudo group super-user privilege."
+        local tmp; tmp=$(CreateTmp "$Sudoers_File")
+        local bak; bak=$(CreateBackup "$Sudoers_File")
+        sed -i 's/^# *\(%sudo ALL=(ALL:ALL) ALL\)/\1/' "$tmp"
+        if visudo -csf "$tmp"; then
+            mv "$tmp" "$Sudoers_File"
             Log "$Sudoers_Modified"
+            Typing "${G}Successfully granted${I} sudo group super-user privilege."
         else 
-            rm "$tmp_file" "$bak_file"
-            Typing "${R}ERROR${I}: Something went wrong. You need manually grant later."
+            rm "$tmp" "$bak"
+            Typing -e "Something went wrong. You need manually grant later."
         fi
     }
 
@@ -587,7 +601,7 @@ InitializeRemoteSetUp(){
             Typing -n "Your comment: "; read -r comment
             comment=$(Trim "$comment")
 
-            ssh-keygen -t ed25519 -o -a 256 -C "$comment" -f "$Script_Dir/${Hostname}_${u}.key"
+            ssh-keygen -t ed25519 -o -a 256 -C "$comment" -f "$WORKING_DIR/${Hostname}_${u}_$TIMESTAMP.key"
     
             echo -e "${G}Keys generated for user $u.${I}"
         done
@@ -600,18 +614,18 @@ InitializeRemoteSetUp(){
     
         # Back up orginal root user's key, for restoration
         local root_keys="$HOME/.ssh/authorized_keys"
-        [[ -f "$root_keys" ]] && cp "$root_keys" "$root_keys.bak"
+        [[ -f "$root_keys" ]] && CreateBackup "$root_keys"
 
+        Log "$Public_Key_Added"
         local home all_users=("${New_Users[@]}" "$(whoami)")
         local u; for user in "${all_users[@]}"; do
             home=$(eval "echo ~$user")
             mkdir -p "$home/.ssh"
-            cat "$Script_Dir/${Hostname}_${user}.key.pub" >> "$home/.ssh/authorized_keys"
+            cat "$WORKING_DIR/${Hostname}_${user}_*.pub" >> "$home/.ssh/authorized_keys"
             chown "$user:$user" "$home/.ssh/authorized_keys"
             chmod 600 "$home/.ssh/authorized_keys"
             echo -e "Added key for user $user"
         done
-        Log "$Public_Key_Added"
         Typing "${G}Successfully added all public keys.${I}"
     }
 
@@ -623,7 +637,10 @@ InitializeRemoteSetUp(){
         Typing "${G}Bash${I} should be the safest choice for most servers. It's default on many distros and the most common one. You can also try zsh if you want something fancier."
 
         Typing "Here's a list of shells installed on your system:"
-        cat /etc/shells || { Typing "${Y}ERROR${I}: Command \`cat /etc/shells\` can't list installed shells. You may need to manually check later."; return 0; }
+        cat /etc/shells || { 
+            Typing -e "Command \`cat /etc/shells\` can't list installed shells. You may need to manually check later."; 
+            return 0; 
+        }
 
         local answer
         for user in "${New_Users[@]}"; do
@@ -648,39 +665,48 @@ InitializeRemoteSetUp(){
         if timedatectl show | grep -qE 'NTPSynchronized|TimeUSec' || ps aux | grep -E 'chronyd|ntpd|openntpd'; then
             Typing "${G}The system has correct timekeeping.${I}"
         else
-            Typing "${R}ERROR:${I} No NTP process found. You may need to troubleshoot manually later."
+            Typing -e "No NTP process found. You may need to troubleshoot manually later."
         fi
     }
 
-    CreateSshConfigBackup(){
-        Typing "We are about to ${Y}edit ssh configurations${I}. Let's first create a backup."
-        cp -i "$Sshd_Config" "${Sshd_Config}.bak"
-        echo -e "${G}Backup created${I} under $Sshd_Config.bak"
-        Log "$Ssh_Config_Backed_Up"
+    IncludeSshdDirectives(){
+        local main_config="/etc/ssh/sshd_config"
+        local directive_dir="$Sshd_Directive_Dir/"
+        Typing "We are about to ${Y}edit ssh configurations${I}. It's best we avoid directly modifying $main_config, but ${Y}add override files${I} under $directive_dir. This allows easier roll-back just in case."
+        Typing "But first we need to make sure $main_config includes $directive_dir..."
+        if cat /etc/ssh/ssh_config | grep -q "^[[:space:]]*Include /etc/ssh/ssh_config.d/\*\.conf"; then
+            Typing "Already included. Good to go."
+        else
+            Typing "Not included. Modifying $main_config..."
+            CreateBackup "$main_config"
+            Typing "${G}Backup created.${I}"
+            Log "$Main_Sshd_Config_Modified"
+            if cat /etc/ssh/ssh_config | grep -q "Include /etc/ssh/ssh_config.d/\*\.conf"; then
+
+        fi
+
+
     }
-    
+     
     EnablePublicKeyAuthentication(){
         Typing "For key auth to work, it needs to be enabled first. Most distros should have it enabled by default."
-        if grep -q "PubkeyAuthentication yes" "$Sshd_Config"; then
-            Typing "Public key auth already enabled."
-            return 0
-        else
-            Typing "Public key auth not enabled."
-            sed -i "s/^ *PubkeyAuthentication.*/PubkeyAuthentication yes/" "$Sshd_Config"
-            Typing "${G}Enabled${I} public key authentication: $(grep "PubkeyAuthentication" "$Sshd_Config")"
-        fi
+        Typing "Overriding it nonetheless..."
+        cat "PubkeyAuthentication yes" >> "$Sshd_Config"
     }
     
     ChangeSshPortAndAllow(){
         Typing "22 is the convention SSH port. It therefore expects the most attacks. It's advised to ${Y}change${I} to port within ${Y}number 49152 and 65535${I}."
         echo "(Technically you can use any port between 0 and 65535, but ports before 1024 are reserved for well-known use conventions, e.g., 53 for DNS queries and 443 for HTTPS traffic, and numbers between 1024 and 49152 are registered ports for not so well-known or other strict use cases. To avoid conflict in the future, it's best to just leave them alone.)"
         
+        [[ $Initial_Ssh_Port -ne 22 ]] && Typing "${G}Your port is already not 22.${I}"
+
         if ! CheckOsSupport; then
             echo -e "Unfortunately, you distros is not ${Y}supported${I}. It may have default firewall applications. Changing SSH port may not get reflected automatically, therefore blocking connections to the new port."
-            Typing "Refer to the distros diagnostic tutorial to change the port."
+            Typing "Refer to the distros diagnostic tutorial if you wish to change the port."
             return 0 
         fi
 
+        Typing "Change the SSH port?"
         Typing "(Changing port won't interrupt current connection until SSH service is restarted)"
         local new_port; while true; do
             Typing -n "Type the new port, return if no change: "; read -r new_port
@@ -689,12 +715,12 @@ InitializeRemoteSetUp(){
                 Typing "Skipped changing SSH port."
                 return 0
             elif [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -gt 0 ] && [ "$new_port" -le 65535 ]; then
-                sed -i "s/^#\?Port.*/Port $new_port/" "$Sshd_Config"
+                cat "Port $new_port" >> "$Sshd_Config"
                 New_Ssh_Port=$new_port
                 Typing "SSH port ${G}changed${I}: $(grep "^Port" "$Sshd_Config")"
                 break
             else 
-                Typing "${R}ERROR${I}: Invalid input. Please choOse a number between 0 and 65535. Let's try again."
+                Typing -e "Invalid input. Please choose a number between 0 and 65535. Let's try again."
             fi
         done
     
@@ -722,7 +748,7 @@ InitializeRemoteSetUp(){
         local response
         Typing -n "Disable it? (Y/n): "; read -r response
         if CheckYesOrNo "$response" Y; then
-            sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication no/" "$Sshd_Config"
+            cat "PasswordAuthentication no" >> "$Sshd_Config"
             Typing "Password auth ${G}disabled${I}: $(grep "^PasswordAuthentication" "$Sshd_Config")"
         else 
             Typing "Skipped disabling password authentication."
@@ -736,7 +762,7 @@ InitializeRemoteSetUp(){
         local response
         Typing -n "Disable it? (Y/n): "; read -r  response
         if CheckYesOrNo "$response" Y; then
-            sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' "$Sshd_Config"
+            cat "PermitRootLogin no" >> "$Sshd_Config"
             Typing "${G}Disabled${I} root login: $(grep "^PermitRootLogin" "$Sshd_Config")"
         else 
             Typing "${G}Skipped${I} disabling root login."
@@ -752,7 +778,7 @@ InitializeRemoteSetUp(){
             local response; Typing -n "Change root password? (y/N): "; read -r  response
             if CheckYesOrNo "$response" N; then
                 if ! passwd; then
-                    Typing "${R}ERROR${I}: Something went wrong. Let's try again."
+                    Typing -e "Something went wrong. Let's try again."
                 else
                     Log "$Root_Password_Modified"
                     Typing "${G}Successfully${I} changed the root user's password."
@@ -779,12 +805,12 @@ InitializeRemoteSetUp(){
             Log "$Package_Updating"
             if eval "$Update_Cmd"; then
                 Log "$Package_Updated"
-                echo -e "${G}All packages successfully updated.${I}"
+                Typing "${G}All packages successfully updated.${I}"
             else
-                echo "${R}Something went wrong${I}. You may need to troubleshoot manually later."
+                Typing -e "${R}Something went wrong${I}. You may need to troubleshoot manually later."
             fi
         else 
-            echo -e "${G}Skipped${I} updating packages."
+            Typing "${G}Skipped${I} updating packages."
         fi
     }
     
@@ -814,7 +840,7 @@ InitializeRemoteSetUp(){
         Typing "However, it's ${Y}not strictly neccessary${I} to install Fail2Ban, especially if password auth is already disabled."
     
         if command -v fail2ban >/dev/null 2>&1; then
-            echo -e "${G}Fail2Ban already installed. Skipping...${I}"
+            Typing "${G}Fail2Ban already installed. Skipping...${I}"
             return 0
         fi
     
@@ -860,7 +886,7 @@ InitializeRemoteSetUp(){
         Typing "ufw stands for ${Y}Uncomplicated Firewall${I}. It's a simple yet user-friendly firewall tool built on iptables."
         
         if command -v ufw >/dev/null 2>&1; then
-            echo -e "${G}ufw already installed. Skipping...${I}"
+            Typing "${G}ufw already installed. Skipping...${I}"
             return 0
         fi
     
@@ -909,7 +935,19 @@ InitializeRemoteSetUp(){
 
         nft add rule inet filter input tcp dport "$Initial_Ssh_Port" accept # In case user has changed ssh port but doesn't restart ssh service 
     }
+
+    CreateBackup(){
+        local bak="$1.$TIMESTAMP.bak"
+        cp "$1" "$bak"
+        echo "$bak"
+    }
     
+    CreateTmp(){
+        local tmp="$1.$TIMESTAMP.tmp"
+        cp "$1" "$tmp"
+        echo "$tmp"
+    }
+
     LogUser(){
         echo "$1" >> "$User_Record"
     }
@@ -961,7 +999,7 @@ RemoteSetUp2(){
     CheckTimeSynchronization
     echo
 
-    CreateSshConfigBackup
+    IncludeSshdDirectives
     echo
 
     EnablePublicKeyAuthentication
@@ -979,7 +1017,7 @@ RemoteSetUp2(){
     ChangeRootPassword
     echo
 
-    UpdatePackages || ( Typing "${R}ERROR${I}: Something went wrong. Failed to update packages. You may need to update manually. Skip firewall related setup..." && exit 0 )
+    UpdatePackages || { Typing -e "Something went wrong. Failed to update packages. You may need to update manually. Skip firewall related setup..."; exit 0; }
     echo
 
     InstallFirewall
@@ -1067,14 +1105,14 @@ InitializeRemoteRestore(){
     }
     
     RestoreHostname(){
-        ! CheckLog "$Hostname_Modified" && { Typing "Host name wansn't changed. ${G}Sikpping...${I}"; return 0; }
+        ! CheckLog "$Modify_Hostname" && { Typing "Host name wansn't changed. ${G}Sikpping...${I}"; return 0; }
     
         local original
-        original=$(grep -F "$Hostname_Modified" "$Log_Path" | awk '{print $NF}')
+        original=$(grep -F "$Modify_Hostname" "$Log_Path" | awk '{print $NF}')
         hostnamectl set-hostname "$original"
         Typing "Original hostname ${G}restored${I}."
     
-        if ! CheckLog "$Hosts_File_Modified"; then
+        if ! CheckLog "$Modify_Hosts_File"; then
             Typing "File /etc/hosts wasn't changed. ${G}Sikpping...${I}"
         else
             mv /etc/hosts.bak /etc/hosts
@@ -1269,24 +1307,8 @@ EOF
 
 set -eu
 InitializeShared
-case "$1" in
-    --set_up_1)
-        InitializeRemoteSetUp
-        RemoteSetUp1
-        ;;
-    --set_up_2)
-        InitializeRemoteSetUp
-        RemoteSetUp2
-        ;;
-    --restore)
-        InitializeRemoteRestore
-        RemoteRecoverMain
-        ;;
-    *)
-        InitializeLocal
-        LocalMain "$@"
-        ;;
-esac
+InitializeLocal
+LocalMain "$@"
 
 
 

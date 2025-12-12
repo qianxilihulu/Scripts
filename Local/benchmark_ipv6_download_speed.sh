@@ -1,7 +1,5 @@
 #! /bin/bash
 
-Dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 declare Host User Port Key Socket
 declare Interface Prefix
 declare -A Addresses
@@ -174,14 +172,14 @@ StartServerIperf(){
 CheckServerIperfReachable() {
     echo "Checking the reachability to $Host:5201..."
 
-    if CheckPortOpen $Host 5201; then
+    if CheckPortOpen "$Host" 5201; then
         echo "Port 5201 appears reachable."
     else
         echo "[!] Port 5201 seems to be BLOCKED."
         echo "Probably a firewall issue."
         echo "You'll enter a SSH session to manually allow TCP connection to port 5201 using your server distro's default firewall tool. Use command \`exit\` if completed."
         EnterSsh
-        CheckPortOpen $Host 5201 || { echo "[!] Port 5201 seems still to be BLOCKED. Aborting..."; exit 1; }
+        CheckPortOpen "$Host" 5201 || { echo "[!] Port 5201 seems still to be BLOCKED. Aborting..."; exit 1; }
     fi
 }
 
@@ -225,7 +223,7 @@ RunTest(){
     for ip in "${test_set[@]}"; do
         echo "Testing for $ip"
 
-        CheckPortOpen $Host 5201 && echo "$ip reacheable." || { echo "[!] $ip not reachable. Skipping..."; echo; continue; }
+        CheckPortOpen "$Host" 5201 && echo "$ip reacheable." || { echo "[!] $ip not reachable. Skipping..."; echo; continue; }
 
         result=$(IperfIp "$ip" "$duration") # timeout as fail-safe # redirect to tty for better interactivity
         line=$(echo "$result" | awk '/sender/ {print $(NF-3), $(NF-2)}')

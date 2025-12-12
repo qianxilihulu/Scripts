@@ -1,5 +1,9 @@
 #! /bin/bash
 
+# Finished
+# Plan
+# Add support to csv
+
 declare -a Sites 
 declare Ipv6_Mode Domestic_Address
 
@@ -109,7 +113,7 @@ ScoreLatency(){
     local tmp; if [[ -n $Domestic_Address ]] && tmp=$(ping -c 6 -W 1 "$Domestic_Address"); then
         ping_ms=$(printf "%s" "$tmp" | awk -F'[ /]' '/rtt/ {print $8}')
     fi
-    [[ -z $base ]] && base=300
+    [[ -z $base ]] && base=150
 
     local ratio; ratio=$(echo "scale=3; $handshake_ms / $ping_ms" | bc)
 
