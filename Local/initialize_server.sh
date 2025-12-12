@@ -1,12 +1,9 @@
 #! /bin/bash
 
-# Unfinished
-# /etc/ssh/sshd_config.d/ not considered
-# Non-root admin user
-# Restore not updated
+# Untested
 # Total automation
 
-InitializeShared(){
+InitializeAllShared(){
     # Color code
     R=$'\e[0;31m'
     G=$'\e[0;32m'
@@ -14,36 +11,10 @@ InitializeShared(){
     Y=$'\e[0;33m'
     I=$'\e[0m' # Reset/Init
     
-    # Log code
-    Modify_Hostname="Changing hostname from: "
-    Modify_Hosts_File="Modifying /etc/hosts..."
-    Sudoers_Modified="Modified sudoers file"
-    Public_Key_Added="Adding public keys..."
-    Private_Keys_Added="Private keys added to /etc/.ssh/config/"
-    Main_Sshd_Config_Modified="Modified /.ssh/sshd_config"
-    Root_Password_Modified="Root user password changed"
-    Fail2ban_Installed="Fail2Ban installed"
-    Ufw_Installed="ufw installed"
-    Nftables_Installed="Nftables installed"
-    Nftables_Rule_Modified="Nftables rules added"
-    Package_Updating="Initiated updating for all packages"
-    Package_Updated="All packages updated"
-    
-    # Obsolete
-    CheckIfSudo(){
-        if [[ "$EUID" -ne 0 ]]; then
-            echo -e "${R}ERROR${I}: Rot privileges required. Please log in as root user."
-            exit 1
-        fi
+    Trim(){
+        echo "$1" | sed -E 's/^\s+//;s/\s+$//'
     }
-    
-    CheckIfTyping(){
-        [[ $IS_TYPING == "true" || $IS_TYPING == "false" ]] && return 0
-        local answer
-        read -rp "Do you wish to enable ${Y}typing effect${I} to improve readability and interactivity?: " answer
-        CheckYesOrNo "$answer" && IS_TYPING=true || IS_TYPING=false
-    }
-    
+
     CheckYesOrNo() {
         local input
         [[ -n $1 ]] && input=$1 || input=$2
@@ -56,18 +27,6 @@ InitializeShared(){
             local answer; read -rp "Unknown Input, please type Y, y, N or n. Try again: " answer
             CheckYesOrNo "$answer" && return 0 || return 1
         fi
-    }
-    
-    Log(){
-        echo "$1" >> "$Log_Path"
-    }
-    
-    CheckLog(){
-        grep -Fq "$1" "$Log_Path"
-    }
-    
-    Trim(){
-        echo "$1" | sed -E 's/^\s+//;s/\s+$//'
     }
     
     Typing(){
@@ -109,26 +68,21 @@ InitializeShared(){
         [[ $if_new_line ]] && echo || return 0
     }
 
-    Timestamp(){
-        date -u +"%Y-%m-%dT%H:%M:%S"
+    CheckIfTyping(){
+        [[ $IS_TYPING == "true" || $IS_TYPING == "false" ]] && return 0
+        local answer
+        read -rp "Do you wish to enable ${Y}typing effect${I} to improve readability and interactivity?: " answer
+        CheckYesOrNo "$answer" && IS_TYPING=true || IS_TYPING=false
     }
 }
 
 InitializeLocal(){
-    Timestamp=$(Timestamp)
-    declare -g Local_Work_Dir Remote_Work_Dir
-    declare -g Key_Dir 
-    declare -g Host User Port Ssh_Socket
+    Timestamp=$(date -u +"%Y-%m-%dT%H:%M:%S")
+    declare -g Host User Port
+    Ssh_Socket=$(mktemp -u --suffix=.sock) 
+    Remote_Work_Dir=$(mktemp -ud)
 
-    InitializeEnvironment(){
-        GetServerInfo "$@"
-
-        Local_Work_Dir=$(mktemp) || { Typing -e "Something went wrong creating temporary working directory. Aborting..."; exit 1; }
-        Key_Dir="$Local_Work_Dir/Key"
-        Ssh_Socket=$(mktemp -u --suffix=.sock) 
-
-        mkdir -p "$Key_Dir"
-    }
+    declare -g Good_To_Go
 
     GetServerInfo(){
         while [[ $# -gt 0 ]]; do
@@ -232,7 +186,6 @@ InitializeLocal(){
             echo
 
         ### Set up
-            Remote_Work_Dir=$(SshRunCommand "mktemp")
             local setup_env; setup_env=$(
                 printf '%s\n' \
                     "set -eu" \
@@ -240,127 +193,68 @@ InitializeLocal(){
                     "WORKING_DIR=$Remote_Work_Dir" \
                     "SSH_PORT=$Port" \
                     "IS_TYPING=$IS_TYPING" \
-                    "$(declare -f InitailizeShared)" \
+                    "$(declare -f InitializeAllShared)" \
+                    "$(declare -f InitializeRemoteShared)" \
                     "$(declare -f InitializeRemoteSetUp)" \
-                    "InitailizeShared" \
+                    "InitailizeAllShared" \
+                    "InitializeRemoteShared" \
                     "InitializeRemoteSetUp" 
             )
+            SshRunCommand "mkdir -p $Remote_Work_Dir"
             printf '%s\n' "$setup_env" "$(declare -f RemoteSetUp1)" "RemoteSetUp1" | SshRunScript
             echo
     
         ### Fetch private keys back first
-            SftpFromRemote "$Key_Dir" "$Remote_Work_Dir/*.key"
-            compgen -G "$Key_Dir/*.key" >/dev/null || { 
+            local ssh_config_dir="$HOME/.ssh/config"
+            mkdir -p "$ssh_config_dir"
+            SshRunCommand "Log $Added_Private_Key"
+            SftpFromRemote "$ssh_config_dir" "$Remote_Work_Dir/*.key"
+            compgen -G "$ssh_config_dir/*$Timestamp*" >/dev/null || { 
                 Typing -e "No private key retrieved from remote."; 
                 exit 1; 
             }
-
-            local ssh_config_dir="$HOME/.ssh/config"
-            mkdir -p "$ssh_config_dir"
-            
-            local base 
-            Log "$Private_Keys_Added"
-            local k; for k in "$Key_Dir"/*.key; do
-                base=$(basename "$k" .key)
-                cp "$k" "$ssh_config_dir/$base.$Timestamp.key"
-            done
-            chmod 600 "$ssh_config_dir/"*.key
+            chmod 600 "$ssh_config_dir/"*"$Timestamp"*
             Typing "Private keys copied to ${G}local $ssh_config_dir${I}. SSH checks it automatically when connecting to a remote server, saving you from specifying manually."
             Typing "${G}Keep them safe!${I}"
             echo
     
-        ### Continue set up
+        ### Continue setup
             printf '%s\n' "$setup_env" "$(declare -f RemoteSetUp2)" "RemoteSetUp2" | SshRunScript
             Typing "Everything is set up."
             echo
-    }
 
-    InitializeLocalRestore(){
-        TryConnectToRestorationServer(){
-            if [[ -S "$Ssh_Socket" ]]; then
-                Typing "Found the master connection socket."
-                return 0
-            fi
-        
-            if CreateMasterSshConnection; then
-                Typing "Successfully created new master connection."
-                return 0
-            fi
-        
-            local root_key_path="$Key_Dir/*$User.key"
-            if CreateMasterSshConnection "$root_key_path"; then
-                Typing "Found root user's private key. Successfully created new master connection."
-                return 0 
-            fi 
-            
-            Typing "Logging in as root user disabled. Let's log in as someone in sudo group."
-            LogInSudoAndEnableRootLogIn
-        
-            CreateMasterSshConnection
-        }
-
-        LogInSudoAndEnableRootLogIn(){
-            local username; Typing -n "Sudo group user's name: "; read -r username
-            username=$(Trim "$username")
-        
-            local key_path="$Key_Dir/$username.key"
-            local user_ssh_socket="/tmp/$username@$Server_IP:$Port.sock"
-        
-            if ssh -f -M -S "$user_ssh_socket" -o ControlPersist=yes -p "$Port" "$username"@"$Server_IP" sleep 1; then
-                Typing "Successfully logged in as $username."
-            elif ssh -f -M -S "$user_ssh_socket" -o ControlPersist=yes -i "$key_path" -p "$Port" "$username"@"$Server_IP" sleep 1; then
-                Typing "Successfully logged in as $username using private key."
-            else 
-                Typing "${R}ERROR${I}: Failed to log in as user $username. Please retry. Re-deploy at the provider as the last restort."
-                exit 1
-            fi
-        
-            ssh -S "$user_ssh_socket" -p "$Port" "$username"@"$Server_IP" "sudo sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config"
-            Typing "Enabled logging in as root and password authentication."
-        
-            rm -rf "${user_ssh_socket:?}"
-        }
+        ### Mark success for clean up
+            Good_To_Go=1
     }
 
     Restore(){
-        Typing "You've run this script for $Host before. ${Y}Something went wrong?${I} Don't worry, ${Y}let's restore everything!${I}"
-    
-        TryConnectToRestorationServer
-        echo
-    
-        if SshRunCommand "[[ -d $Remote_Work_Dir ]]"; then
-            echo "Detected neccessary files still left on server."
-        else
-            local files_to_upload=("$Common_Script" "$Restore_Script" "$Restore_Dir/*")
-            SftpToserver "$This_Dir" "${files_to_upload[@]}"
-            echo "Neccessary files copied."
-        fi
-        echo
-    
-        SshRunCommand "IS_TYPING=$IS_TYPING bash $Remote_Work_Dir/server_restore.sh"
+        local restore_env; restore_env=$(
+            printf '%s\n' \
+                "set -eu" \
+                "TIMESTAMP=$Timestamp" \
+                "WORKING_DIR=$Remote_Work_Dir" \
+                "SSH_PORT=$Port" \
+                "IS_TYPING=$IS_TYPING" \
+                "$(declare -f InitializeAllShared)" \
+                "$(declare -f InitializeRemoteShared)" \
+                "$(declare -f InitializeRemoteRestore)" \
+                "InitailizeAllShared" \
+                "InitializeRemoteShared" \
+                "InitializeRemoteRestore" 
+        )
+        printf '%s\n' "$restore_env" "$(declare -f RemoteRestoreMain)" "RemoteRestoreMain" | SshRunScript
         echo "Everything restored."
         echo
-    
-        SshRunCommand "rm -rf ${Remote_Work_Dir:?}"
-        echo "Set-up files removed from server."
-        echo
-    
-        SshRunCommand "systemctl restart ssh"
-        echo "Ssh service restarted."
-        echo
-        
-        rm "$Ssh_Socket"
-        echo "Master Ssh connection socket removed."
-        echo
-    
-        rm -rf "${Local_Work_Dir:?}"
-        echo "Related files removed from local machine."
-        echo
-    
-        echo -e "${G}You're all set${I}."
     }
 
     CleanUp(){
+        ### Check if restore
+        if [[ ! $Good_To_Go ]]; then
+            Typing -e "Script exiting... Performing restoration and clean-up..."
+            Typing -w "Please wait till finish..."
+            Restore
+        fi
+
         ### Apply and Clean up
             rm -rf "${Local_Work_Dir:?}"
             Typing "Cleaned up local temporary files."
@@ -370,16 +264,20 @@ InitializeLocal(){
             Typing "Cleaned up remote temporary files."
             echo
     
-            RestartSsh
-            echo
+            [[ $Good_To_Go ]] && {
+                RestartSsh
+                echo
+            }
     
             rm "$Ssh_Socket"
             Typing "Master SSH connection socket removed. No one can exploit it now."
             echo
         
         ### :)
+        [[ $Good_To_Go ]] && {
             Typing "${G}You're all set!${I}"
             Typing "${G}Enjoy!${I}"
+        }
     }
 }
 
@@ -389,7 +287,7 @@ LocalMain() {
     CheckIfTyping
     echo
 
-    InitializeEnvironment "$@"
+    GetServerInfo "$@"
     echo
 
     if [[ -f "$Log_File" ]]; then
@@ -401,35 +299,48 @@ LocalMain() {
     fi
 }
 
-InitializeRemoteSetUp(){
-    Log_Path="$WORKING_DIR/log"
+InitializeRemoteShared(){
+    Log_File="$WORKING_DIR/log"
     User_Record="$WORKING_DIR/new_users"
-    
-    Os=""
-    Update_Cmd=""
-    Install_Cmd=""
 
+    # Log code
+    Modify_Hostname="Changing hostname from: "
+    Modify_Hosts_File="Modifying /etc/hosts..."
+    Modified_Sudoers="Modified sudoers file"
+    Added_Public_Key="Adding public keys..."
+    Added_Private_Key="Registering privates keys locally"
+    Modified_Main_Ssh_Config="Modified /.ssh/sshd_config"
+    Modified_Root_Password="Modified root password"
+    Updating_Packages="Updating packages"
+    Updated_Packages="Updated All packages"
+    Installed_Fail2Ban="Installed Fail2Ban"
+    Installed_Ufw="Installed ufw"
+    Installed_Nftables="Installed nftables"
+    Modified_Nftables_Rule="Set up nftables rules"
+
+    Nftables_Dir="/etc/nftables"
     Hostname_File="/etc/hostname"
+    Hosts_File="/etc/hosts"
     Sudoers_File="/etc/sudoers"
-
+    Main_Sshd_Config="/etc/ssh/sshd_config"
     Sshd_Directive_Dir="/etc/ssh/sshd_config.d"
-    Sshd_Config="/etc/ssh/sshd_config.d/99-user.conf"
-    Initial_Ssh_Port=$SSH_PORT
-    New_Ssh_Port=""
+    Sshd_Config="$Sshd_Directive_Dir/99-user.$TIMESTAMP.conf"
+    Root_Keys="$HOME/.ssh/authorized_keys"
     
-    New_Users=()
+    # Obsolete
+    CheckIfSudo(){
+        if [[ "$EUID" -ne 0 ]]; then
+            echo -e "${R}ERROR${I}: Rot privileges required. Please log in as root user."
+            exit 1
+        fi
+    }
 
-    Hostname=$(cat "$Hostname_File")
-
-    InitializeSystemInfo(){
-        Typing "Some features of this script ${Y}aren't applicable to all Linux distributions${I}. Different distro ships with different packages and different package managing system. The script can't cover them all. Don't worry, those aren't critical. You can always set them up manually."
-    
+    InitializeDistroInfo(){
         local os_file="/etc/os-release"
         if [[ -f /etc/Os-release ]]; then
             source "$os_file"
             Os=$ID
         else 
-            Typing -e "Can't find file $os_file. Maybe a legacy distro."
             Os="Unknown"
             return 1
         fi
@@ -438,26 +349,72 @@ InitializeRemoteSetUp(){
             almalinux|centos|rocky)
                 Update_Cmd="dnf update -y"
                 Install_Cmd="dnf install -y"
+                Uninstall_Cmd="dnf remove -y"
                 ;;
             debian|ubuntu)
                 Update_Cmd="export DEBIAN_FRONTEND=noninteractive && apt-get update -y && apt-get dist-upgrade -o Dpkg::Options::=\"--force-confold\" -o Dpkg::Options::=\"--force-confdef\" && apt-get autoremove -y"
                 Install_Cmd="apt-get install -y"
+                Uninstall_Cmd="apt-get purge -y"
                 ;;
             fedora)
                 Update_Cmd="dnf upgrade --refresh -y"
                 Install_Cmd="dnf install -y"
+                Uninstall_Cmd="dnf remove -y"
                 ;;
             *)
-                Typing "${Y}Unfortunately${I} your system $Os is not supported. "
-                Typing "Supported distro: debian, ubuntu, almalinux, centos, rocky and fedora."
                 Os="Unsupported"
                 return 1
                 ;;
         esac
+        
+    }
+
+    Log(){
+        echo "$1" >> "$Log_File"
+    }
     
-        Typing "Your system $Os is ${G}supported${I}."
-        echo -e "Update command: $Update_Cmd"
-        echo -e "Installation command: $Install_Cmd"
+    CheckLog(){
+        grep -Fq "$1" "$Log_File"
+    }
+
+    ParseUserFromRecord(){
+        local -n _arr=$1
+        readarray -r _arr < "$User_Record"
+    }
+
+    CheckOsSupport(){
+        echo "$Os" | grep -iqE "unsupported|unknown" && return 1 || return 0
+    }
+}
+
+InitializeRemoteSetUp(){
+    declare -I TIMESTAMP WORKING_DIR SSH_PORT
+    
+    Os=""
+    Update_Cmd=""
+    Install_Cmd=""
+
+    Hostname=$(cat "$Hostname_File")
+
+    New_Users=()
+    
+    Initial_Ssh_Port=$SSH_PORT
+    New_Ssh_Port=""
+
+    InitializeSystemInfo(){
+        Typing "Some features of this script ${Y}aren't applicable to all Linux distributions${I}. Different distro ships with different packages and different package managing system. The script can't cover them all. Don't worry, those aren't critical. You can always set them up manually."
+        
+        InitializeDistroInfo || true
+
+        if CheckOsSupport; then
+            Typing "${Y}Unfortunately${I} your system $Os is not supported. "
+            [[ $Os == "Unknown" ]] && Typing -e "It appears to be a legacy distro."
+            Typing "Supported distro: debian, ubuntu, almalinux, centos, rocky and fedora."
+        else
+            Typing "Your system $Os is ${G}supported${I}."
+            Typing "Update command: $Update_Cmd"
+            Typing "Installation command: $Install_Cmd"
+        fi     
     }
 
     ChangeHostname(){
@@ -482,10 +439,9 @@ InitializeRemoteSetUp(){
             fi
         done
         
-        Log "$Modify_Hostname $original"
-        if hostnamectl set-hostname "$new"; then
-            true
-        elif cat "$new" > "$Hostname_File"; then
+        CreateBackup "$Hostname_File"
+        if cat "$new" > "$Hostname_File"; then
+            Log "$Modify_Hostname $original"
             hostname "$new"
         else
             Typing -e "Failed to change hostname. You may need to troubleshoot manually later."
@@ -496,15 +452,15 @@ InitializeRemoteSetUp(){
     }
 
     EditHostsFile(){
-        local hosts_file="/etc/hosts"
-        Typing "We also need to reflect the change in file $hosts_file. It's a file mapping hostname and local IP. It's still referenced by some tools."
+        local Hosts_File="/etc/hosts"
+        Typing "We also need to reflect the change in file $Hosts_File. It's a file mapping hostname and local IP. It's still referenced by some tools."
         if ! CheckOsSupport; then
-            Typing "However, we don't know the $hosts_file file structure of your distro."
+            Typing "However, we don't know the $Hosts_File file structure of your distro."
             Typing "You may need to modify manually afterwards."
             return 0
         fi
 
-        CreateBackup "$hosts_file"
+        CreateBackup "$Hosts_File"
         Typing "Backup file created."
 
         Log "$Modify_Hosts_File"
@@ -518,7 +474,7 @@ InitializeRemoteSetUp(){
                 echo "::1 $new $new.localdomain $new.localdomain6" > /etc/hosts
                 ;;
         esac
-        Typing "${G}Successfully modified $hosts_file.${I}"
+        Typing "${G}Successfully modified $Hosts_File.${I}"
 
         if grep -q "/etc/cloud" /etc/hosts; then
             Typing -w "Your server provider uses Cloud-Init, which means that after reboot, your server will follow cloud templates and forget all about changes we made."
@@ -581,7 +537,7 @@ InitializeRemoteSetUp(){
         sed -i 's/^# *\(%sudo ALL=(ALL:ALL) ALL\)/\1/' "$tmp"
         if visudo -csf "$tmp"; then
             mv "$tmp" "$Sudoers_File"
-            Log "$Sudoers_Modified"
+            Log "$Modified_Sudoers"
             Typing "${G}Successfully granted${I} sudo group super-user privilege."
         else 
             rm "$tmp" "$bak"
@@ -613,10 +569,9 @@ InitializeRemoteSetUp(){
         Typing "(One user can actually have multiple public-private key pairs)"
     
         # Back up orginal root user's key, for restoration
-        local root_keys="$HOME/.ssh/authorized_keys"
-        [[ -f "$root_keys" ]] && CreateBackup "$root_keys"
+        [[ -f "$Root_Keys" ]] && CreateBackup "$Root_Keys"
 
-        Log "$Public_Key_Added"
+        Log "$Added_Public_Key"
         local home all_users=("${New_Users[@]}" "$(whoami)")
         local u; for user in "${all_users[@]}"; do
             home=$(eval "echo ~$user")
@@ -670,22 +625,23 @@ InitializeRemoteSetUp(){
     }
 
     IncludeSshdDirectives(){
-        local main_config="/etc/ssh/sshd_config"
-        local directive_dir="$Sshd_Directive_Dir/"
-        Typing "We are about to ${Y}edit ssh configurations${I}. It's best we avoid directly modifying $main_config, but ${Y}add override files${I} under $directive_dir. This allows easier roll-back just in case."
-        Typing "But first we need to make sure $main_config includes $directive_dir..."
-        if cat /etc/ssh/ssh_config | grep -q "^[[:space:]]*Include /etc/ssh/ssh_config.d/\*\.conf"; then
+        local esc_line="Include /etc/ssh/ssh_config.d/\*\.conf"
+
+        Typing "We are about to ${Y}edit ssh configurations${I}. It's best we avoid directly modifying $Main_Sshd_Config, but ${Y}add override files${I} under $Sshd_Directive_Dir. This allows easier roll-back just in case."
+        Typing "But first we need to make sure $Main_Sshd_Config includes $Sshd_Directive_Dir..."
+        if grep -Eq "^[[:space:]]*$esc_line" "$Main_Sshd_Config"; then
             Typing "Already included. Good to go."
         else
-            Typing "Not included. Modifying $main_config..."
-            CreateBackup "$main_config"
+            Typing "Not included. Modifying $Main_Sshd_Config..."
+            CreateBackup "$Main_Sshd_Config"
             Typing "${G}Backup created.${I}"
-            Log "$Main_Sshd_Config_Modified"
-            if cat /etc/ssh/ssh_config | grep -q "Include /etc/ssh/ssh_config.d/\*\.conf"; then
-
+            Log "$Modified_Main_Ssh_Config"
+            if grep -Eq "$esc_line" "$Main_Sshd_Config"; then
+                sed -i "s|^[#[:space:]]*$esc_line|$esc_line|" "$Main_Sshd_Config"
+            else
+                sed -i "1i $esc_line" "$Main_Sshd_Config"
+            fi
         fi
-
-
     }
      
     EnablePublicKeyAuthentication(){
@@ -780,7 +736,7 @@ InitializeRemoteSetUp(){
                 if ! passwd; then
                     Typing -e "Something went wrong. Let's try again."
                 else
-                    Log "$Root_Password_Modified"
+                    Log "$Modified_Root_Password"
                     Typing "${G}Successfully${I} changed the root user's password."
                 fi
             else
@@ -802,9 +758,9 @@ InitializeRemoteSetUp(){
     
         local answer; echo -n "Update? (y/N): "; read -r answer
         if CheckYesOrNo "$answer" N; then
-            Log "$Package_Updating"
+            Log "$Updating_Packages"
             if eval "$Update_Cmd"; then
-                Log "$Package_Updated"
+                Log "$Updated_Packages"
                 Typing "${G}All packages successfully updated.${I}"
             else
                 Typing -e "${R}Something went wrong${I}. You may need to troubleshoot manually later."
@@ -866,8 +822,10 @@ InitializeRemoteSetUp(){
             *)
                 Typing "Your system $Os is ${Y}currenly not supported${I}. You may need to install manually later."
                 return 0 
-        esac
-        Log "$Fail2ban_Installed"
+        esac \
+        && Log "$Installed_Fail2Ban" \
+        || { ReportInstallFailure "Fail2Ban"; return 0; }
+        
 
         local default_config="/etc/fail2ban/fail2ban.conf"
         local local_cnfig="/etc/fail2ban/fail2ban.local"
@@ -897,10 +855,14 @@ InitializeRemoteSetUp(){
             SetUpDefaultNftablesRules
         else
             Typing "Installing ufw..."
-            eval "$Install_Cmd ufw"
-            Typing "ufw ${G}successfully installed${I}."
-            Log "$Ufw_Installed"
-    
+            if eval "$Install_Cmd ufw"; then
+                Log "$Installed_Ufw" 
+                Typing "ufw ${G}successfully installed${I}."
+            else
+                ReportInstallFailure "ufw"
+                return 0
+            fi
+            
             ufw default deny incoming
             ufw default allow outgoing
             ufw allow "$Initial_Ssh_Port/tcp"
@@ -915,16 +877,21 @@ InitializeRemoteSetUp(){
     SetUpDefaultNftablesRules(){
         if ! command -v nft > /dev/null 2>&1; then
             Typing "Nftables not installed. Installing..."
-            eval "$Install_Cmd nftables"
-            Log "$Nftables_Installed"
+            if eval "$Install_Cmd nftables"; then
+                Log "$Installed_Nftables"
+                Typing "${G}Successfully installed.${I}"
+            else
+                ReportInstallFailure "nftables"
+                Typing "You are ${R}strongly advised${I} to set up firewall manually later."
+                return 0
+            fi
         fi
 
-        local bak="$Script_Dir/backup.nft"
-        nft list ruleset > "$bak"
+        nft list ruleset > "$Nftables_Dir/nft.$TIMESTAMP.bak"
         Typing "Original nftables rules backed up."
     
         nft -f <"$(TemplateNftables)"
-        Log "$Nftables_Rule_Modified"
+        Log "$Modified_Nftables_Rule"
         [[ -n $New_Ssh_Port ]] && nft add rule inet filter input tcp dport "$New_Ssh_Port" accept
         Typing "Nftables rules added."
 
@@ -952,12 +919,84 @@ InitializeRemoteSetUp(){
         echo "$1" >> "$User_Record"
     }
 
-    ParseUserFromRecord(){
-        readarray -r New_Users < "$User_Record"
+    ReportInstallFailure(){
+        Typing -e "Something went wrong installing $1. You may need to install manually later."
     }
 
-    CheckOsSupport(){
-        echo "$Os" | grep -iqE "unsupported|unknown" && return 1 || return 0
+    TemplateNftables(){ cat <<EOF
+        #!/usr/sbin/nft -f
+    
+        flush ruleset
+    
+        table inet raw {
+            chain prerouting {
+                type filter hook prerouting priority raw;
+    
+                # Drops new TCP connections that do not have the SYN flag set
+                tcp flags & (fin|syn|rst|ack) != syn ct state new drop
+    
+                # Drops NULL packets, meaning TCP packets with no flags set
+                tcp flags & (fin|syn|rst|psh|ack|urg) == 0 drop
+    
+                # Drops TCP packets with all flags set, known as XMAS packets.
+                tcp flags & (fin|syn|rst|psh|ack|urg) == (fin|syn|rst|psh|ack|urg) drop
+            }
+        }
+    
+    
+        table inet filter {
+            set ipv4_blackroom {
+                type ipv4_addr
+                flags dynamic, timeout
+                timeout 1m
+            }
+    
+            set ipv6_blackroom {
+                type ipv6_addr
+                flags dynamic, timeout
+                timeout 1m
+            }
+    
+            chain input {
+                type filter hook input priority filter; policy drop;
+    
+                # Connection tracking
+                ct state {established, related} accept
+                ct state invalid drop
+    
+                # Local interface
+                iifname lo accept
+                # Drop external request to local addr to anti-proof
+                iifname != lo ip saddr 127.0.0.0/8 drop
+                iifname != lo ip6 saddr ::1 drop
+    
+                # ICMP/ICMPv6 - essential only
+                meta l4proto {icmp, ipv6-icmp} limit rate 20/second accept
+    
+                # Blackroom for TCP connections
+                meta nfproto ipv4 tcp flags & (fin|syn|rst|ack) == syn limit rate over 50/second add @ipv4_blackroom { ip saddr } drop
+                meta nfproto ipv6 tcp flags & (fin|syn|rst|ack) == syn limit rate over 50/second add @ipv6_blackroom { ip6 saddr } drop
+    
+                # Blackroom for UDP connections
+                meta nfproto ipv4 ip protocol udp limit rate over 1200/second add @ipv4_blackroom { ip saddr } drop
+                meta nfproto ipv6 ip6 nexthdr udp limit rate over 1200/second add @ipv6_blackroom { ip6 saddr } drop
+            }
+    
+            chain forward {
+                type filter hook forward priority filter; policy drop;
+    
+                # Connection tracking
+                ct state {established, related} accept
+            }
+    
+            chain output {
+                type filter hook output priority filter; policy accept;
+    
+                # Connection tracking for output
+                ct state invalid drop
+            }
+        }
+EOF
     }
 }
 
@@ -989,8 +1028,8 @@ RemoteSetUp1(){
 RemoteSetUp2(){
     CheckIfSudo
 
-    InitializeSystemInfo >/dev/null 2>&1
-    ParseUserFromRecord
+    InitializeDistroInfo || true
+    ParseUserFromRecord New_Users
     echo
 
     CheckUserShell
@@ -1017,7 +1056,10 @@ RemoteSetUp2(){
     ChangeRootPassword
     echo
 
-    UpdatePackages || { Typing -e "Something went wrong. Failed to update packages. You may need to update manually. Skip firewall related setup..."; exit 0; }
+    UpdatePackages || { 
+        Typing -e "Something went wrong. Failed to update packages. You may need to update manually. Skip firewall related setup..."
+        exit 0 
+    }
     echo
 
     InstallFirewall
@@ -1029,75 +1071,67 @@ RemoteSetUp2(){
 
 InitializeRemoteRestore(){
     CheckAnySetup(){
-        [[ ! -f "$Log_Path" ]] && { echo "Nothing to restore server-side. Skipping...";  exit 0; } || return 0
-    }
-    
-    InitializeDistroInfo(){
-        if [[ -f /etc/Os-release ]]; then
-            source /etc/os-release
-            Os=$ID
-        else 
-            Os="Unknown"
-            return 0
+        if [[ ! -f "$Log_File" ]]; then 
+            Typing "Nothing to restore server-side. Skipping..."
+            exit 0
         fi
-    
-        case "$Os" in
-            almalinux|centos|rocky|fedora)
-                Uninstall_Cmd="dnf remove -y"
-                ;;
-            debian|ubuntu)
-                Uninstall_Cmd="apt-get purge -y"
-                ;;
-            *)
-                echo "Unsupported system: $Os"
-                return 0
-                ;;
-        esac
-        echo "Uninstall command for your distro $Os is: $Uninstall_Cmd"
+    }
+
+    InitializeSystemInfo(){
+        InitializeDistroInfo || true
+        Typing "Uninstall command for your distro $Os is: $Uninstall_Cmd"
     }
     
     FinishUpdate(){
-        if CheckLog "$Package_Updating" && ! CheckLog "$Package_Updated" ; then
-            Typing "Things seemed to go wrong during packages update. While update is irreversible, partial update can be dangerous. We need to finish it."
-            Typing "Finishing packages updating..."
-            if eval "$Update_Cmd"; then 
-                Log "$Package_Updated"
-                Typing "${G}All packages successfully updated.${I}"
-                return 0
-            else
-                Typing "Still failed to update. You need to troubleshoot manually later."
-                return 1
-            fi
-        elif ! CheckLog "$Package_Updating"; then
+        if ! CheckLog "$Updating_Packages"; then
             Typing "Packages weren't updated. ${G}Skipping${I}..."
             return 0
-        elif CheckLog "$Package_Updated"; then
-            Typing "${Y}Packages updated${I}. It ${Y}can't be reversed${I}, but it won't do you any harm."
+        fi
+
+        if CheckLog "$Updated_Packages"; then
+            Typing "${Y}Packages were updated${I}. It ${Y}can't be reversed${I}, but it won't do you any harm."
             return 0
+        fi
+
+        Typing "Package update went wrong mid-way. While this is irreversible, partial update can be dangerous. Let's finish what we started."
+        Typing "Finishing packages updating..."
+        if eval "$Update_Cmd"; then 
+            Log "$Updated_Packages"
+            Typing "${G}All packages updated successfully.${I}"
+            return 0
+        else
+            Typing -e "Update failed again :( You need to troubleshoot manually later."
+            return 1
         fi
     }  
     
     UninstallFail2Ban(){
-        ! CheckLog "$Fail2ban_Installed" && { Typing "Didn't install Fail2Ban. Skipping..."; return 0; }
-        eval "$Uninstall_Cmd fail2ban"
-        rm -rf /etc/fail2ban
-        rm -rf /var/log/fail2ban.log /var/lib/fail2ban
-        Typing "${G}Fail2Ban purged.${I}"
+        if ! CheckLog "$Installed_Fail2Ban"; then
+            Typing "Didn't install Fail2Ban. Skipping..."
+            return 0
+        fi
+        
+        if UninstallElseReport fail2ban; then
+            rm -rf /etc/fail2ban
+            rm -rf /var/log/fail2ban.log /var/lib/fail2ban
+        fi
     }
     
     UninstallUfw(){
-        ! CheckLog "$Ufw_Installed" && { Typing "Didn't install ufw. Skipping..."; return 0; }
-        eval "$Uninstall_Cmd ufw"
-        Typing "${G}ufw uninstalled.${I}"
+        if ! CheckLog "$Installed_Ufw"; then
+            Typing "Didn't install ufw. Skipping..."
+            return 0
+        fi
+
+        UninstallElseReport ufw || true
     }
     
     RestoreNftables(){
-        if CheckLog "$Nftables_Installed"; then
-            eval "$Uninstall_Cmd nftables"
-            Typing "${G}Nftables uninstalled${I}."
-        elif CheckLog "$Nftables_Rule_Modified"; then
+        if CheckLog "$Installed_Nftables"; then
+            UninstallElseReport ufw || true
+        elif CheckLog "$Modified_Nftables_Rule"; then
             nft flush ruleset
-            nft -f "$Script_Dir/backup.nft"
+            nft -f "$Nftables_Dir/"*"$TIMESTAMP".bak
             Typing "${G}Nftable rules recovered${I}."
         else
             Typing "Didn't configure nftable. ${G}Skipping${I}"
@@ -1105,114 +1139,129 @@ InitializeRemoteRestore(){
     }
     
     RestoreHostname(){
-        ! CheckLog "$Modify_Hostname" && { Typing "Host name wansn't changed. ${G}Sikpping...${I}"; return 0; }
+        if ! CheckLog "$Modify_Hostname"; then
+            Typing "Hostname not changed. ${G}Sikpping...${I}"
+            return 0
+        fi
     
-        local original
-        original=$(grep -F "$Modify_Hostname" "$Log_Path" | awk '{print $NF}')
-        hostnamectl set-hostname "$original"
-        Typing "Original hostname ${G}restored${I}."
+        RestoreBackup "$Hostname_File"
     
         if ! CheckLog "$Modify_Hosts_File"; then
-            Typing "File /etc/hosts wasn't changed. ${G}Sikpping...${I}"
+            Typing "File /etc/hosts not touched. ${G}Sikpping...${I}"
         else
-            mv /etc/hosts.bak /etc/hosts
-            Typing "${G}Restored /etc/hosts.${I}"
+            RestoreBackup "$Hosts_File"
+            Typing "${G}Restored $Hosts_File.${I}"
         fi
     }
     
     RestoreSudoers(){
-        if ! CheckLog "$Sudoers_Modified"; then
+        if ! CheckLog "$Modified_Sudoers"; then
             Typing "Sudoers file wasn't modified. ${G}Skipping${I}."
             return 0
         fi
     
-        mv /etc/sudoers.bak /etc/sudoers
-        Typing "${G}Restored /etc/sudoers.${I}"
+        RestoreBackup "$Sudoers_File"
+        Typing "${G}Restored $Sudoers_File.${I}"
     }
     
     RemoveUsers(){
-        if [[ ! -f "$USER_LOG_PATH" ]]; then
+        if [[ ! -f "$User_Record" ]]; then
             Typing "No new user was created. ${G}Skipping${I}"
             return 0
         fi
     
-        local user
-        local users_array
-        mapfile -t users_array < <(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$USER_LOG_PATH" | tr -s ' ' '\n' | grep -v '^$')
-        
-        for user in "${users_array[@]}"; do
-            pkill -u "$user"
-            userdel -r "$user"
-            echo "Removed user $user."
+        local -a users
+        ParseUserFromRecord users
+        local u; for u in "${users[@]}"; do
+            pkill -u "$u"
+            userdel -r "$u"
+            Typing "Removed user $u."
         done
     
         Typing "${G}All created users removed.${I}"
         Typing "Remaining user:"
         ls /home
-        Typing "You may see some users that weren't created by this script, or some that can't be removed because their home directory holds files or folders of others. You may need to remove them manually."
+        Typing "There may be existing users before thisscript or whom holding others' files. You may need to remove them manually later."
     }
     
     RestoreRootKey(){
-        ! CheckLog "$Public_Key_Added" && return 0
-        
-        local key="$HOME/.ssh/authorized_keys"
-        local bak="$key.bak"
-        [[ -f "$bak" ]] && mv "$bak" "$key" || rm "$key"
-        Typing "${G}Restored $key.${I}"
+        ! CheckLog "$Added_Public_Key" && return 0
+        RestoreBackup "$Root_Keys"
     }
     
-    RecoverSshConfig(){
-        if ! CheckLog "$Ssh_Config_Backed_Up"; then
-            Typing "Didn't change SSH config. ${G}Skipping${I}"
+    RestoreSshdConfig(){
+        if ! CheckLog "$Modified_Main_Ssh_Config"; then
+            Typing "Didn't modify $Main_Sshd_Config. ${G}Skipping${I}"
             return 0
         fi
 
-        local config; config="$(LocateSshdConfig)"
-        local bak; bak="$(LocateSshdConfigBak)"
-
-        local current_port; current_port=$(grep -E "^[[:space:]]*#?[[:space:]]*Port" "$config" | awk '{print $2}')
-        local initial_port; initial_port=$(grep -E "^[[:space:]]*#?[[:space:]]*Port" "$bak" | awk '{print $2}')
+        RestoreBackup "$Main_Sshd_Config"
+        
+        # local initial_port=$SSH_PORT
+        local new_port; new_port=$(grep -E "^[[:space:]]*Port" "$Sshd_Config" | awk '{print $2}')
         if systemctl status firewalld > /dev/null 2>&1; then
-            firewall-cmd --permanent --remove-port="$current_port/tcp"
-            firewall-cmd --permanent --zone=public --add-port="$initial_port/tcp"
+            firewall-cmd --permanent --remove-port="$new_port/tcp"
+            # firewall-cmd --permanent --zone=public --add-port="$initial_port/tcp"
             firewall-cmd --reload
         fi
-        if sestatus > /dev/null 2>&1; then
-            semanage port -m -t ssh_port_t -p tcp "$initial_port"
-        fi
+        # if sestatus > /dev/null 2>&1; then
+        #   semanage port -m -t ssh_port_t -p tcp "$initial_port"
+        # fi
         if ufw --version > /dev/null 2>&1; then 
-            ufw deny "$current_port"
-            ufw allow "$initial_port/tcp"
+            ufw deny "$new_port"
+            # ufw allow "$initial_port/tcp"
         fi
         Typing "Firewall rules restored."
 
-        mv "$bak" "$config"
+        rm "$Sshd_Config"
         Typing "SSH config restored. "
     }
     
-    InformAboutRootPassword(){
-        if CheckLog "$Root_Password_Modified"; then
+    InformRootPasswordChange(){
+        if CheckLog "$Modified_Root_Password"; then
             Typing "Root user passwrod changed. However, this is irreversible as original password isn't recorded."
         fi
     }
+
+    UninstallElseReport(){
+        if [[ -z $1 ]]; then
+            Typing -b "Uninstall is called without argument."
+            return 0
+        fi
+        if eval "$Uninstall_Cmd $1"; then
+            Typing "${G}$1 uninstalled${I}."
+            return 0
+        else
+            Typing -e "Something went wrong uninstalling $1. You may need to uninstall manually later."
+            return 1
+        fi
+    }
+
+    RestoreBackup(){
+        local file_name=$1
+        local folder; folder=$(dirname "$1")
+        [[ ! -f file_name ]] && { Typing -b "Not providing file path"; exit 1; }
+        mv "$folder"/*"$TIMESTAMP"* "$file_name"
+    }
 }
 
-RemoteRecoverMain(){
+RemoteRestoreMain(){
     CheckIfSetupAnything
 
-    CheckIfSudo
+    InitializeSystemInfo
+    echo
 
-    if InitializeInformation; then 
-        echo
-        FinishUpdate
-        echo
-        UninstallFail2Ban
-        echo
-        UninstallUfw
-        echo
-        UninstallOrRestoreNftables 
-        echo
-    fi
+    FinishUpdate
+    echo
+
+    UninstallFail2Ban
+    echo
+
+    UninstallUfw
+    echo
+
+    UninstallOrRestoreNftables 
+    echo
 
     RestoreHostname
     echo
@@ -1220,93 +1269,19 @@ RemoteRecoverMain(){
     RestoreSudoers
     echo
 
-    RemoveUsers && echo && RestoreRootKey
+    RemoveUsers
+    RestoreRootKey
     echo
 
-    RecoverSshConfig
+    RestoreSshdConfig
     echo
 
-    InformAboutRootPassword
-}
-
-TemplateNftables(){ cat <<EOF
-    #!/usr/sbin/nft -f
-
-    flush ruleset
-
-    table inet raw {
-        chain prerouting {
-            type filter hook prerouting priority raw;
-
-            # Drops new TCP connections that do not have the SYN flag set
-            tcp flags & (fin|syn|rst|ack) != syn ct state new drop
-
-            # Drops NULL packets, meaning TCP packets with no flags set
-            tcp flags & (fin|syn|rst|psh|ack|urg) == 0 drop
-
-            # Drops TCP packets with all flags set, known as XMAS packets.
-            tcp flags & (fin|syn|rst|psh|ack|urg) == (fin|syn|rst|psh|ack|urg) drop
-        }
-    }
-
-
-    table inet filter {
-        set ipv4_blackroom {
-            type ipv4_addr
-            flags dynamic, timeout
-            timeout 1m
-        }
-
-        set ipv6_blackroom {
-            type ipv6_addr
-            flags dynamic, timeout
-            timeout 1m
-        }
-
-        chain input {
-            type filter hook input priority filter; policy drop;
-
-            # Connection tracking
-            ct state {established, related} accept
-            ct state invalid drop
-
-            # Local interface
-            iifname lo accept
-            # Drop external request to local addr to anti-proof
-            iifname != lo ip saddr 127.0.0.0/8 drop
-            iifname != lo ip6 saddr ::1 drop
-
-            # ICMP/ICMPv6 - essential only
-            meta l4proto {icmp, ipv6-icmp} limit rate 20/second accept
-
-            # Blackroom for TCP connections
-            meta nfproto ipv4 tcp flags & (fin|syn|rst|ack) == syn limit rate over 50/second add @ipv4_blackroom { ip saddr } drop
-            meta nfproto ipv6 tcp flags & (fin|syn|rst|ack) == syn limit rate over 50/second add @ipv6_blackroom { ip6 saddr } drop
-
-            # Blackroom for UDP connections
-            meta nfproto ipv4 ip protocol udp limit rate over 1200/second add @ipv4_blackroom { ip saddr } drop
-            meta nfproto ipv6 ip6 nexthdr udp limit rate over 1200/second add @ipv6_blackroom { ip6 saddr } drop
-        }
-
-        chain forward {
-            type filter hook forward priority filter; policy drop;
-
-            # Connection tracking
-            ct state {established, related} accept
-        }
-
-        chain output {
-            type filter hook output priority filter; policy accept;
-
-            # Connection tracking for output
-            ct state invalid drop
-        }
-    }
-EOF
+    InformRootPasswordChange
+    echo
 }
 
 set -eu
-InitializeShared
+InitializeAllShared
 InitializeLocal
 LocalMain "$@"
 
