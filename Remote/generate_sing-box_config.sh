@@ -138,6 +138,11 @@ SetUpShadowSocks(){
     done
 }
 
+InstallTcpBrutal(){
+	echo "Installing TCP Brutal kernel module..."
+	bash <(curl -fsSL https://tcp.hy2.sh/)
+}
+
 GetDnsStrategy(){
     echo "Choosing server side resolving strategy..."
     echo "Note this only affects server-originated DNS queries, e.g., resolving Reality domains."
@@ -284,7 +289,6 @@ VlessInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
 EOF
 }
 
-# Multiplex suffers from dual-proxy, e.g., fragment authentication
 ShadowSocksInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
     "tag": "ss-in",
     "type": "shadowsocks",
