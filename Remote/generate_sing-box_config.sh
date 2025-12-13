@@ -272,10 +272,19 @@ VlessInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
             "short_id":  "${_dict[reality_short_id]}" ,
             "max_time_difference": "1m"
         }
-    }
+    },
+	"multiplex": {
+		"enabled": true,
+		"brutal": {
+			"enabled": true,
+			"up_mbps": 25,
+			"down_mbps": 25
+		}
+	}
 EOF
 }
 
+# Multiplex suffers from dual-proxy, e.g., fragment authentication
 ShadowSocksInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
     "tag": "ss-in",
     "type": "shadowsocks",
@@ -284,9 +293,9 @@ ShadowSocksInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
     "method": "${_dict[method]}",
     "password": "${_dict[server_password]}",
     "users": $(ConvertArrayToJsonArray _users),
-    "multiplex": { 
-        "enabled": true
-    }
+	"multiplex": { 
+		"enabled": true
+	}
 EOF
 }
 
@@ -309,10 +318,20 @@ ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
             "enabled": true,
             "fingerprint": "chrome"
         }
-    }
+    },
+	"multiplex": {
+		"enabled": true,
+		"padding": false,
+		"protocol": "h2mux",
+		"max_streams": 2,
+		"brutal": {
+			"enabled": true,
+		}
+	}
 EOF
 }
 
+# smux and yamux uses heartbeat packets to keep alive, and may aggressively kill connections in high RTT scenarios.
 ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
     "tag": "$Default_Outbound_Tag",
     "type": "shadowsocks",
@@ -320,10 +339,13 @@ ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
     "server_port": ${_dict[port]},
     "method": "${_dict[method]}",
     "password": "${_dict[server_password]}:${_dict[user_password]}",
-    "multiplex": { 
-        "enabled": true, 
-        "protocol": "smux" 
-    },
+	"multiplex": { 
+		"enabled": true, 
+		"padding": false
+		"protocol": "h2mux",
+		"max_connections": 2,
+		"min_streams": 16
+	},
     "detour": "Using ShadowSocks directly in mainland China may receive immediate block by GFW"
 EOF
 }

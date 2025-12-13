@@ -1,5 +1,7 @@
 #! /bin/bash
 
+set -o pipefail
+
 declare Host User Port Key Socket
 declare Interface Prefix
 declare -A Addresses
@@ -224,8 +226,8 @@ RunTest(){
         echo "Testing for $ip"
 
         CheckPortOpen "$Host" 5201 && echo "$ip reacheable." || { echo "[!] $ip not reachable. Skipping..."; echo; continue; }
-
-        result=$(IperfIp "$ip" "$duration") # timeout as fail-safe # redirect to tty for better interactivity
+        
+        result=$(IperfIp "$ip" "$duration")
         line=$(echo "$result" | awk '/sender/ {print $(NF-3), $(NF-2)}')
         echo "Result for $ip: $line"
         echo
@@ -295,7 +297,12 @@ DeleteTestIp(){
 IperfIp(){
     local i ip=$1 duration=$2
     for((i=0; i<3; i++)); do
-        timeout $(( duration + 3 )) stdbuf -oL iperf3 -6 -R -c "$ip" -t "$duration" 2>&1 | tee /dev/tty && return 0 || echo "Attempt $i: Failed to run iperf3 for $ip."
+        if timeout $(( duration + 5 )) stdbuf -oL iperf3 -6 -R -c "$ip" -t "$duration" 2>&1 | tee /dev/tty; then # timeout as fail-safe # redirect to tty for better interactivity
+            return 0
+        else 
+            sleep 1.5
+            echo "Attempt $i: Failed to run iperf3 for $ip."
+        fi
     done
     return 1
 }
@@ -332,7 +339,12 @@ EnterSsh(){
 CheckPortOpen(){
     local i host=$1 port=$2
     for((i=0; i<3; i++)); do
-        curl -v -6 -m 1 "telnet://[$host]:$port" 2>&1 | grep -iq "established" && return 0 || echo "Attempt $i: Failed to check if port $port of $host is open."
+        if curl -v -6 -m 1 "telnet://[$host]:$port" 2>&1 | grep -iq "established"; then
+            return 0
+        else 
+            sleep 1.5
+            echo "Attempt $i: Failed to check if port $port of $host is open."
+        fi
     done
     return 1    
 }
