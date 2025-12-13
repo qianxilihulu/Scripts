@@ -1,12 +1,12 @@
 #! /bin/bash
 
-set -e
+set -e -o pipefail
 
 Dir="$(pwd)"
 declare -a Inbounds ClientOubounds
 declare Dns_Strategy
 
-Default_Outbound_Tag="Don't forget to tag"
+Default_Tag="Don't forget to tag"
 
 Main(){
     command -v sing-box >/dev/null && printf "sing-box installation detected.\n\n" || { echo "[!] No sing-box installation found."; exit 1; }
@@ -27,7 +27,7 @@ Main(){
 
     local tmp; tmp=$(mktemp) || { echo "mktemp failed"; exit 1; }
     ServerConfig > "$tmp"
-    sing-box format -w -c "$tmp" 2>/dev/null
+    SingBoxFormat "$tmp"
     
     local output_file="$Dir/sing-box.json"
     cp "$tmp" "$output_file"
@@ -36,7 +36,7 @@ Main(){
 
     echo "Client configuration:"
     ClientConfig > "$tmp"
-    sing-box format -w -c "$tmp" 2>/dev/null
+    SingBoxFormat "$tmp"
     cat "$tmp"
 }
 
@@ -77,6 +77,7 @@ SetUpVless(){
         [reality_public_key]=$public_key
         [reality_private_key]=$private_key
         [reality_short_id]=$short_id
+		[client_tag]="$RANDOM $Default_Tag"
     )
     Inbounds+=("$(VlessInbound dict users)")
     local s; for s in "${servers[@]}"; do
@@ -130,6 +131,7 @@ SetUpShadowSocks(){
         [method]=$method
         [server_password]=$server_password
         [user_password]=${user[password]}
+		[client_tag]="$RANDOM $Default_Tag"
     )
     Inbounds+=("$(ShadowSocksInbound dict users)")
     local s; for s in "${servers[@]}"; do
@@ -266,11 +268,11 @@ VlessInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
     "users": $(ConvertArrayToJsonArray _users),
     "tls": {
         "enabled": true,
-        "server_name": "${_dict[server]}",
+        "server_name": "${_dict[reality_server]}",
         "reality": {
             "enabled": true,
             "handshake": {
-                "server": "${_dict[server]}",
+                "server": "${_dict[reality_server]}",
                 "server_port": 443
             },
             "private_key": "${_dict[reality_private_key]}",
@@ -304,7 +306,7 @@ EOF
 }
 
 ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
-    "tag": "$Default_Outbound_Tag",
+    "tag": "${_dict[client_tag]}",
     "type": "vless",
     "flow": "xtls-rprx-vision",
     "server": "${_dict[server]}",
@@ -329,7 +331,7 @@ ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
 		"protocol": "h2mux",
 		"max_streams": 2,
 		"brutal": {
-			"enabled": true,
+			"enabled": true
 		}
 	}
 EOF
@@ -337,7 +339,7 @@ EOF
 
 # smux and yamux uses heartbeat packets to keep alive, and may aggressively kill connections in high RTT scenarios.
 ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
-    "tag": "$Default_Outbound_Tag",
+    "tag": "${dict[client_tag]}",
     "type": "shadowsocks",
     "server": "${_dict[server]}",
     "server_port": ${_dict[port]},
@@ -345,7 +347,7 @@ ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
     "password": "${_dict[server_password]}:${_dict[user_password]}",
 	"multiplex": { 
 		"enabled": true, 
-		"padding": false
+		"padding": false,
 		"protocol": "h2mux",
 		"max_connections": 2,
 		"min_streams": 16
@@ -364,6 +366,16 @@ LocalDns(){ cat <<EOF
     "tag": "local_dns",
     "type": "local"
 EOF
+}
+
+SingBoxFormat(){
+	local msg file=$1
+	if msg=$(sing-box format -w -c "$file" 2>&1); then
+		return 0
+	else
+		printf 'Sing-Box format error: %s\n' "$msg"
+		return 1
+	fi
 }
 
 ConvertArrayToJsonField(){

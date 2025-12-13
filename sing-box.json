@@ -1,0 +1,117 @@
+{
+  "log": {
+    "level": "debug"
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "local",
+        "tag": "local_dns"
+      }
+    ],
+    "strategy": "prefer_ipv6"
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [
+        {
+          "name": "vless_client",
+          "uuid": "2d77de69-ce98-442d-a0e8-9869d99b97f4",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.a.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.a.com",
+            "server_port": 443
+          },
+          "private_key": "aHwmaDuRjesuVCYuX6UyujfRd3DYPaEf2YA9_FLrV0s",
+          "short_id": "0d48014d",
+          "max_time_difference": "1m0s"
+        }
+      },
+      "multiplex": {
+        "enabled": true,
+        "brutal": {
+          "enabled": true,
+          "up_mbps": 25,
+          "down_mbps": 25
+        }
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "ss-in",
+      "listen": "::",
+      "listen_port": 56901,
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "yxbMiWiOVsK1aFLlBKu6wA==",
+      "users": [
+        {
+          "name": "ss_client",
+          "password": "aNSfc1oQFzG0u35n3TNY6A=="
+        }
+      ],
+      "multiplex": {
+        "enabled": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct-out"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "domain_suffix": ".cn",
+        "action": "reject"
+      },
+      {
+        "rule_set": "geoip-cn",
+        "action": "reject"
+      },
+      {
+        "type": "logical",
+        "mode": "and",
+        "rules": [
+          {
+            "rule_set": "geosite-cn"
+          },
+          {
+            "rule_set": "geosite-geolocation-!cn",
+            "invert": true
+          }
+        ],
+        "action": "reject"
+      }
+    ],
+    "rule_set": [
+      {
+        "type": "remote",
+        "tag": "geoip-cn",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-cn",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs"
+      },
+      {
+        "type": "remote",
+        "tag": "geosite-geolocation-!cn",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs"
+      }
+    ]
+  }
+}
