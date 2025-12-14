@@ -9,13 +9,15 @@ declare Dns_Strategy
 Default_Tag="Don't forget to tag"
 
 Main(){
+    local answer
+
     if command -v sing-box >/dev/null; then
-        printf "sing-box installation detected.\n\n"
+        echo "Sing-Box installation detected."
     else 
-        echo "No sing-box installation found."
+        echo "No Sing-Box installation found. Installing..."
         InstallSingBox
     fi
-    local answer
+    echo
 
     read -rp "Set up Vless inbound? [y/n]: " answer
     CheckYesNo "$answer" && SetUpVless && InstallTcpBrutal
@@ -407,23 +409,22 @@ InstallSingBox(){
 
     case "$Os" in
         almalinux|centos|rocky|fedora)
-            sudo dnf config-manager addrepo --from-repofile=https://sing-box.app/sing-box.repo \
-            && sudo dnf install sing-box # or sing-box-beta
+            sudo dnf config-manager addrepo --from-repofile=https://sing-box.app/sing-box.repo
+            sudo dnf install sing-box # or sing-box-beta
             ;;
         debian|ubuntu)
-            sudo mkdir -p /etc/apt/keyrings \
-            && sudo curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc \
-            && sudo chmod a+r /etc/apt/keyrings/sagernet.asc \
-            && echo '
-                Types: deb
-                URIs: https://deb.sagernet.org/
-                Suites: *
-                Components: *
-                Enabled: yes
-                Signed-By: /etc/apt/keyrings/sagernet.asc' \
-            | sudo tee /etc/apt/sources.list.d/sagernet.sources \
-            && sudo apt-get update \
-            && sudo apt-get install sing-box # or sing-box-beta
+            sudo mkdir -p /etc/apt/keyrings
+            sudo curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc
+            sudo chmod a+r /etc/apt/keyrings/sagernet.asc
+            printf '%s\n' \
+                'Types: deb' \
+                'URIs: https://deb.sagernet.org/' \
+                'Suites: *' \
+                'Components: *' \
+                'Signed-By: /etc/apt/keyrings/sagernet.asc' \
+            | sudo tee /etc/apt/sources.list.d/sagernet.sources > /dev/null
+            sudo apt-get update
+            sudo apt-get install sing-box # or sing-box-beta
             ;;
         *)
             echo "Unsupported distro. Please install sing-box manually."
