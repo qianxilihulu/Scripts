@@ -337,7 +337,7 @@ InitializeRemoteShared(){
 
     InitializeDistroInfo(){
         local os_file="/etc/os-release"
-        if [[ -f /etc/Os-release ]]; then
+        if [[ -f "$os_file" ]]; then
             source "$os_file"
             Os=$ID
         else 

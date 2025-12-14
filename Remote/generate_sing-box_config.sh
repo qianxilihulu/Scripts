@@ -9,7 +9,12 @@ declare Dns_Strategy
 Default_Tag="Don't forget to tag"
 
 Main(){
-    command -v sing-box >/dev/null && printf "sing-box installation detected.\n\n" || { echo "[!] No sing-box installation found."; exit 1; }
+    if command -v sing-box >/dev/null; then
+        printf "sing-box installation detected.\n\n"
+    else 
+        echo "No sing-box installation found."
+        InstallSingBox
+    fi
     local answer
 
     read -rp "Set up Vless inbound? [y/n]: " answer
@@ -141,7 +146,10 @@ SetUpShadowSocks(){
 
 InstallTcpBrutal(){
 	echo "Installing TCP Brutal kernel module..."
-	bash <(curl -fsSL https://tcp.hy2.sh/)
+	bash <(curl -fsSL https://tcp.hy2.sh/) || { 
+		echo "Failed to install TCP Brutal kernel."
+		exit 1
+	}
 }
 
 GetDnsStrategy(){
@@ -387,6 +395,43 @@ ConvertArrayToJsonField(){
     echo "\"$name\": $(ConvertArrayToJsonArray _arr)"
 }
 
+InstallSingBox(){
+    local os_file="/etc/os-release"
+    if [[ -f $os_file ]]; then
+        source "$os_file"
+        Os=$ID
+    else 
+        echo "Can't locate $os_file. Maybe a legacy distro. Please install sing-box manually."
+        return 1
+    fi
+
+    case "$Os" in
+        almalinux|centos|rocky|fedora)
+            sudo dnf config-manager addrepo --from-repofile=https://sing-box.app/sing-box.repo \
+            && sudo dnf install sing-box # or sing-box-beta
+            ;;
+        debian|ubuntu)
+            sudo mkdir -p /etc/apt/keyrings \
+            && sudo curl -fsSL https://sing-box.app/gpg.key -o /etc/apt/keyrings/sagernet.asc \
+            && sudo chmod a+r /etc/apt/keyrings/sagernet.asc \
+            && echo '
+                Types: deb
+                URIs: https://deb.sagernet.org/
+                Suites: *
+                Components: *
+                Enabled: yes
+                Signed-By: /etc/apt/keyrings/sagernet.asc' \
+            | sudo tee /etc/apt/sources.list.d/sagernet.sources \
+            && sudo apt-get update \
+            && sudo apt-get install sing-box # or sing-box-beta
+            ;;
+        *)
+            echo "Unsupported distro. Please install sing-box manually."
+            return 1
+            ;;
+    esac
+}
+
 ConvertArrayToJsonArray(){
     local -n __arr=$1
     
@@ -465,5 +510,7 @@ PickFromArray(){
         echo "${list[$((answer - 1))]}"
     fi
 }
+
+
 
 Main
