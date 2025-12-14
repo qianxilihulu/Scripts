@@ -80,7 +80,7 @@ EOF
 
 Score(){
     local -n _dict=$1
-    [[ ${_dict[tls1_3]_1} && ${_dict[h2]_1} && ${_dict[x25519]_1} && ${_dict[no_redirect]_1} ]] || { echo 0; return 0; }
+    [[ ${_dict[tls1_3]} && ${_dict[h2]} && ${_dict[x25519]} && ${_dict[no_redirect]} ]] || { echo 0; return 0; }
     
     local score=60
     local room=$(( 100 - score ))

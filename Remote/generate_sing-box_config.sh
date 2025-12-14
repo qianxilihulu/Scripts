@@ -12,8 +12,8 @@ Main(){
     command -v sing-box >/dev/null && printf "sing-box installation detected.\n\n" || { echo "[!] No sing-box installation found."; exit 1; }
     local answer
 
-    read -rp "Set up Vless+Vision+Reality inbound? [y/n]: " answer
-    CheckYesNo "$answer" && SetUpVless
+    read -rp "Set up Vless inbound? [y/n]: " answer
+    CheckYesNo "$answer" && SetUpVless && InstallTcpBrutal
     echo
 
     read -rp "Set up ShadowSocks inbound? [y/n]: " answer
@@ -53,7 +53,6 @@ SetUpVless(){
     local -A user
     user[name]="vless_client"
     user[uuid]=$(sing-box generate uuid)
-    user[flow]="xtls-rprx-vision" 
     users+=("$(ConvertAssociatedArrayToObject user)")
 
     read -rp "Reality camouflage server [Example: itunes.apple.com]: " answer
@@ -147,7 +146,7 @@ InstallTcpBrutal(){
 
 GetDnsStrategy(){
     echo "Choosing server side resolving strategy..."
-    echo "Note this only affects server-originated DNS queries, e.g., resolving Reality domains."
+    echo "Note this only affects server-originated DNS queries, e.g., resolving rule-set or Reality domains."
     local -a options=(both prefer_ipv4 prefer_ipv6 ipv4_only ipv6_only )
 
     Dns_Strategy=$(PickFromArray "${options[@]}")
@@ -282,6 +281,7 @@ VlessInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
     },
 	"multiplex": {
 		"enabled": true,
+        "padding": true,
 		"brutal": {
 			"enabled": true,
 			"up_mbps": 25,
@@ -305,10 +305,10 @@ ShadowSocksInbound(){ local -n _dict=$1 _users=$2; cat <<EOF
 EOF
 }
 
+# Vision conflicts with multiplex
 ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
     "tag": "${_dict[client_tag]}",
     "type": "vless",
-    "flow": "xtls-rprx-vision",
     "server": "${_dict[server]}",
     "server_port": ${_dict[port]},
     "uuid": "${_dict[uuid]}",
@@ -327,11 +327,14 @@ ClientVlessOutbound(){ local -n _dict=$1; cat <<EOF
     },
 	"multiplex": {
 		"enabled": true,
-		"padding": false,
+		"padding": true,
 		"protocol": "h2mux",
-		"max_streams": 2,
+		"max_connections": 3,
+        "min_streams": 6,
 		"brutal": {
-			"enabled": true
+			"enabled": true,
+			"up_mbps": 25,
+			"down_mbps": 25
 		}
 	}
 EOF
@@ -347,7 +350,6 @@ ClientShadowSocksOutbound(){ local -n _dict=$1; cat <<EOF
     "password": "${_dict[server_password]}:${_dict[user_password]}",
 	"multiplex": { 
 		"enabled": true, 
-		"padding": false,
 		"protocol": "h2mux",
 		"max_connections": 2,
 		"min_streams": 16
